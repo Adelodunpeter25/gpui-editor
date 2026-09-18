@@ -13,3 +13,4 @@ gpui_platform = { workspace = true }
 edit-buffer = { workspace = true }
 editor-ui = { workspace = true }
 syntax = { workspace = true }
+rfd = "0.17.2"
