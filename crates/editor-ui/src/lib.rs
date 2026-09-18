@@ -421,43 +421,51 @@ impl Render for EditorView {
 
 fn color_for(capture: Capture) -> Hsla {
     match capture {
-        Capture::Keyword => Hsla::blue(),
-        Capture::String => Hsla::green(),
-        Capture::Comment => Hsla::white().opacity(0.55),
-        Capture::Number => Hsla::red(),
-        Capture::Function => Hsla::white(),
-        Capture::Type => Hsla::white(),
-        Capture::Plain => Hsla::white(),
+        Capture::Keyword => rgb(0x89b4fa).into(),
+        Capture::String => rgb(0xa6e3a1).into(),
+        Capture::Comment => rgb(0x6c7086).into(),
+        Capture::Number => rgb(0xfab387).into(),
+        Capture::Function => rgb(0x89dceb).into(),
+        Capture::Type => rgb(0xf9e2af).into(),
+        Capture::Plain => rgb(0xcdd6f4).into(),
     }
 }
 
 fn render_line(row: u32, text: String, runs: Vec<(Range<usize>, Hsla)>) -> impl IntoElement {
     let line_no = format!("{:>4}", row + 1);
-    // Stable domain id from (name, row): never a bare list position.
     div()
         .id(("editor-line", row as usize))
         .flex()
         .flex_row()
-        .px_2()
-        .gap_3()
-        .border_b_1()
-        .border_color(Hsla::white().opacity(0.12))
+        .items_center()
+        .px_3()
+        .h(px(22.0))
+        .font_family(".AppleSystemUIFontMonospaced")
+        .text_sm()
         .child(
             div()
                 .w_12()
                 .flex_shrink_0()
-                .text_color(Hsla::white().opacity(0.45))
+                .text_color(rgb(0x585b70))
                 .child(line_no),
         )
-        .child(render_spans(text, runs))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .overflow_x_hidden()
+                .child(render_spans(text, runs)),
+        )
 }
 
 fn render_spans(text: String, runs: Vec<(Range<usize>, Hsla)>) -> impl IntoElement {
     let chars: Vec<char> = text.chars().collect();
     if runs.is_empty() {
-        return div().child(text).into_any_element();
+        let display_text = if text.is_empty() { " ".to_string() } else { text };
+        return div().child(display_text).into_any_element();
     }
-    // Paint runs as colored inline spans; gaps stay default color.
+
     let mut children: Vec<AnyElement> = Vec::new();
     let mut cursor = 0usize;
     for (range, color) in runs {
@@ -465,18 +473,28 @@ fn render_spans(text: String, runs: Vec<(Range<usize>, Hsla)>) -> impl IntoEleme
         let hi = range.end.min(chars.len());
         if lo > cursor {
             let gap: String = chars[cursor..lo].iter().collect();
-            children.push(div().child(gap).into_any_element());
+            if !gap.is_empty() {
+                children.push(div().text_color(rgb(0xcdd6f4)).child(gap).into_any_element());
+            }
         }
         if lo < hi {
             let word: String = chars[lo..hi].iter().collect();
-            children.push(div().text_color(color).child(word).into_any_element());
+            if !word.is_empty() {
+                children.push(div().text_color(color).child(word).into_any_element());
+            }
         }
         cursor = cursor.max(hi);
     }
     if cursor < chars.len() {
         let tail: String = chars[cursor..].iter().collect();
-        children.push(div().child(tail).into_any_element());
+        if !tail.is_empty() {
+            children.push(div().text_color(rgb(0xcdd6f4)).child(tail).into_any_element());
+        }
     }
+    if children.is_empty() {
+        children.push(div().child(" ".to_string()).into_any_element());
+    }
+
     div().flex().flex_row().children(children).into_any_element()
 }
 

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use syntax::LanguageRegistry;
 
-actions!(demo, [OpenFile]);
+actions!(demo, [OpenFile, Quit]);
 
 const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
@@ -91,6 +91,9 @@ impl Render for DemoApp {
             .on_action(cx.listener(|this, _: &OpenFile, window, cx| {
                 this.open_file(window, cx);
             }))
+            .on_action(cx.listener(|_this, _: &Quit, _window, cx| {
+                cx.quit();
+            }))
             // Top toolbar / status bar with Open button
             .child(
                 div()
@@ -99,7 +102,7 @@ impl Render for DemoApp {
                     .items_center()
                     .justify_between()
                     .px_3()
-                    .py_1p5()
+                    .py_2()
                     .bg(rgb(0x181825))
                     .border_b_1()
                     .border_color(rgb(0x313244))
@@ -108,11 +111,11 @@ impl Render for DemoApp {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_2()
+                            .gap_3()
                             .child(
                                 div()
                                     .id("open-button")
-                                    .px_2p5()
+                                    .px_3()
                                     .py_1()
                                     .rounded_md()
                                     .bg(rgb(0x313244))
@@ -151,15 +154,34 @@ impl Render for DemoApp {
 fn main() {
     let platform = gpui_platform::current_platform(false);
     Application::with_platform(platform).run(|cx: &mut App| {
+        // Configure macOS Application Menus so the app name and menus appear in the menu bar
+        cx.set_menus(vec![
+            Menu {
+                name: "GPUI Editor".into(),
+                items: vec![
+                    MenuItem::action("Quit GPUI Editor", Quit),
+                ],
+                disabled: false,
+            },
+            Menu {
+                name: "File".into(),
+                items: vec![
+                    MenuItem::action("Open File…", OpenFile),
+                ],
+                disabled: false,
+            },
+        ]);
+
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("ctrl-o", OpenFile, Some("DemoApp")),
+            KeyBinding::new("cmd-q", Quit, None),
         ]);
 
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("GPUI Editor Demo".into()),
+                    title: Some("GPUI Editor".into()),
                     appears_transparent: false,
                     traffic_light_position: None,
                 }),
@@ -173,5 +195,7 @@ fn main() {
             |_window, cx| cx.new(DemoApp::new),
         )
         .expect("failed to open window");
+
+        cx.activate(true);
     });
 }
