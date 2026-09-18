@@ -24,6 +24,7 @@ impl Language {
 }
 
 // Built-in languages mapping to Lumis language definitions
+pub const PLAIN_TEXT: Language = Language::new("plain_text", lumis::languages::Language::PlainText, &["txt", "text"]);
 pub const RUST: Language = Language::new("rust", lumis::languages::Language::Rust, &["rs"]);
 pub const TOML: Language = Language::new("toml", lumis::languages::Language::Toml, &["toml"]);
 pub const JSON: Language = Language::new("json", lumis::languages::Language::JSON, &["json"]);
@@ -74,6 +75,7 @@ pub const INI: Language = Language::new("ini", lumis::languages::Language::INI, 
 pub const DIFF: Language = Language::new("diff", lumis::languages::Language::Diff, &["diff", "patch"]);
 
 pub const ALL_LANGUAGES: &[&Language] = &[
+    &PLAIN_TEXT,
     &RUST,
     &TOML,
     &JSON,
@@ -164,5 +166,14 @@ impl LanguageRegistry {
             }
         }
         None
+    }
+
+    pub fn guess(path_or_ext: Option<&str>, content: &str) -> &'static Language {
+        let lumis_lang = lumis::languages::Language::guess(path_or_ext, content);
+        ALL_LANGUAGES
+            .iter()
+            .find(|l| l.lumis_lang == lumis_lang)
+            .copied()
+            .unwrap_or(&PLAIN_TEXT)
     }
 }
