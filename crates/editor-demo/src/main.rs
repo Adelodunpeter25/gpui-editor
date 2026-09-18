@@ -1,8 +1,12 @@
 use editor_ui::{EditorState, EditorView};
 use gpui::*;
+use std::borrow::Cow;
 use std::fs;
 use std::path::PathBuf;
 use syntax::LanguageRegistry;
+
+static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
 actions!(demo, [OpenFile, Quit]);
 
@@ -154,6 +158,13 @@ impl Render for DemoApp {
 fn main() {
     let platform = gpui_platform::current_platform(false);
     Application::with_platform(platform).run(|cx: &mut App| {
+        if let Err(error) = cx
+            .text_system()
+            .add_fonts(vec![Cow::Borrowed(FONT_JETBRAINS_MONO_REGULAR)])
+        {
+            eprintln!("Failed to register bundled fonts: {error}");
+        }
+
         // Configure macOS Application Menus so the app name and menus appear in the menu bar
         cx.set_menus(vec![
             Menu {

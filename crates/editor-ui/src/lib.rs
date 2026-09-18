@@ -440,7 +440,7 @@ fn render_line(row: u32, text: String, runs: Vec<(Range<usize>, Hsla)>) -> impl 
         .items_center()
         .px_3()
         .h(px(22.0))
-        .font_family(".AppleSystemUIFontMonospaced")
+        .font_family("JetBrains Mono")
         .text_sm()
         .child(
             div()
