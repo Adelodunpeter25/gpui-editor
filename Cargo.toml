@@ -11,6 +11,6 @@ resolver = "2"
 edit-buffer = { path = "crates/edit-buffer" }
 syntax = { path = "crates/syntax" }
 editor-ui = { path = "crates/editor-ui" }
-gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed" }
-gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed" }
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f" }
+gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f" }
 ropey = "1.6"
