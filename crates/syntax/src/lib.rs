@@ -9,8 +9,8 @@ pub use languages::{
     Language, LanguageRegistry, ALL_LANGUAGES, ASTRO, BASH, C, CLOJURE, CMAKE, CPP, CSHARP, CSS,
     DART, DIFF, DOCKERFILE, ELIXIR, ERLANG, GLSL, GO, GRAPHQL, HASKELL, HTML, INI, JAVA,
     JAVASCRIPT, JSON, JSON5, KOTLIN, LUA, MAKEFILE, MARKDOWN, NIX, OCAML, PHP, PLAIN_TEXT,
-    PROTOBUF, PYTHON, RUBY, RUST, SCALA, SCSS, SOLIDITY, SQL, SVELTE, SWIFT, TOML, TSX,
-    TYPESCRIPT, VUE, XML, YAML, ZIG, ZSH,
+    PROTOBUF, PYTHON, RUBY, RUST, SCALA, SCSS, SOLIDITY, SQL, SVELTE, SWIFT, TOML, TSX, TYPESCRIPT,
+    VUE, XML, YAML, ZIG, ZSH,
 };
 pub use theme::{get_theme, ThemePreset};
 
@@ -83,7 +83,11 @@ fn scope_to_capture(scope: &str) -> Capture {
 
 /// Highlight input text with `lumis` syntax engine.
 /// Converts byte ranges to char offsets for editor compatibility.
-pub fn highlight(text: &str, language: Option<&Language>, buffer_version: u64) -> HighlightedVersion {
+pub fn highlight(
+    text: &str,
+    language: Option<&Language>,
+    buffer_version: u64,
+) -> HighlightedVersion {
     let mut spans = Vec::new();
 
     let lang = language.unwrap_or(&PLAIN_TEXT);
@@ -120,7 +124,7 @@ pub fn highlight(text: &str, language: Option<&Language>, buffer_version: u64) -
         }
     };
 
-    let default_theme = lumis::themes::get("dracula").ok();
+    let default_theme = lumis::themes::get("github_dark").ok();
 
     let _ = lumis::highlight::highlight_iter(
         text,
