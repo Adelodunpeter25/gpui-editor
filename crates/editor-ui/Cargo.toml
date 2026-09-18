@@ -1,0 +1,10 @@
+[package]
+name = "editor-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui = { workspace = true }
+edit-buffer = { workspace = true }
+syntax = { workspace = true }
+ropey = { workspace = true }

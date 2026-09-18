@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "crates/edit-buffer",
+  "crates/syntax",
+  "crates/editor-ui",
+  "crates/editor-demo",
+]
+resolver = "2"
+
+[workspace.dependencies]
+edit-buffer = { path = "crates/edit-buffer" }
+syntax = { path = "crates/syntax" }
+editor-ui = { path = "crates/editor-ui" }
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed" }
+gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed" }
+ropey = "1.6"
