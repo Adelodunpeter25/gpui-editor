@@ -29,10 +29,10 @@ use crate::wrap::{clip_to_subrange, WrapCache};
 use crate::{color_for, measure_char_width, render_scrollbar, render_spans, round_wrap_width};
 
 /// Gutter width before wrapped text starts: two `w_10()` line-number
-/// columns + `px_2()` padding on both sides + the row's own `border_l_2()`
+/// columns + `px_2()` padding on both sides + the row's own `border_l_4()`
 /// change-marker bar — wider than the editor's own `WRAP_GUTTER_RESERVE`
 /// (single gutter) since diff rows have two line-number columns.
-const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(98.0);
+const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(100.0);
 
 pub struct DiffState {
     pub(crate) result: diff::DiffResult,
@@ -225,7 +225,7 @@ fn render_diff_line(
         // Colored left-edge bar for a changed row; invisible (matching
         // border width reserved either way, so layout doesn't shift
         // between changed/context rows) when there's no marker color.
-        .border_l_2()
+        .border_l_4()
         .border_color(marker.unwrap_or(transparent_black().into()));
     if let Some(bg) = bg {
         row = row.bg(bg);
