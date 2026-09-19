@@ -29,10 +29,10 @@ use crate::wrap::{clip_to_subrange, WrapCache};
 use crate::{color_for, measure_char_width, render_scrollbar, render_spans, round_wrap_width};
 
 /// Gutter width before wrapped text starts: two `w_10()` line-number
-/// columns + one `w_4()` marker column + `px_2()` padding on both sides —
-/// wider than the editor's own `WRAP_GUTTER_RESERVE` (single gutter) since
-/// diff rows have two line-number columns plus a change marker.
-const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(112.0);
+/// columns + `px_2()` padding on both sides + the row's own `border_l_2()`
+/// change-marker bar — wider than the editor's own `WRAP_GUTTER_RESERVE`
+/// (single gutter) since diff rows have two line-number columns.
+const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(98.0);
 
 pub struct DiffState {
     pub(crate) result: diff::DiffResult,
@@ -180,10 +180,13 @@ fn render_diff_line(
     theme: ThemePreset,
     font: &FontConfig,
 ) -> impl IntoElement {
-    let (marker, bg, marker_color) = match line.kind {
-        diff::DiffLineKind::Added => ("+", Some(rgba(0x2ea04326)), rgb(0x3fb950)),
-        diff::DiffLineKind::Removed => ("-", Some(rgba(0xf8514926)), rgb(0xf85149)),
-        diff::DiffLineKind::Context => (" ", None, rgb(0x585b70)),
+    // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
+    // instead (matches how GitHub/most PR diff views do it), so `marker`
+    // is now just the bar's color, `None` for context rows (no bar at all).
+    let (marker, bg) = match line.kind {
+        diff::DiffLineKind::Added => (Some(rgb(0x3fb950)), Some(rgba(0x2ea04326))),
+        diff::DiffLineKind::Removed => (Some(rgb(0xf85149)), Some(rgba(0xf8514926))),
+        diff::DiffLineKind::Context => (None, None),
     };
 
     let full_chars: Vec<char> = line.text.chars().collect();
@@ -218,7 +221,12 @@ fn render_diff_line(
         .px_2()
         .h(font.line_height)
         .font_family(font.family.clone())
-        .text_size(font.size);
+        .text_size(font.size)
+        // Colored left-edge bar for a changed row; invisible (matching
+        // border width reserved either way, so layout doesn't shift
+        // between changed/context rows) when there's no marker color.
+        .border_l_2()
+        .border_color(marker.unwrap_or(transparent_black().into()));
     if let Some(bg) = bg {
         row = row.bg(bg);
     }
@@ -233,8 +241,6 @@ fn render_diff_line(
     } else {
         " ".repeat(4)
     };
-    let marker_label = if sub == 0 { marker } else { " " };
-
     row.child(
         div()
             .w_10()
@@ -245,19 +251,12 @@ fn render_diff_line(
     .child(
         div()
             .w_10()
-            .flex_shrink_0()
-            .text_color(rgb(0x585b70))
-            .child(new_label),
-    )
-    .child(
-        div()
-            .w_4()
             .h_full()
             .flex_shrink_0()
             .border_r_1()
             .border_color(rgba(0xffffff1a))
-            .text_color(marker_color)
-            .child(marker_label),
+            .text_color(rgb(0x585b70))
+            .child(new_label),
     )
     .child(
         div()
