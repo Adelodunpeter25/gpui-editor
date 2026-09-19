@@ -366,12 +366,14 @@ fn bracket_pair(c: char) -> Option<(char, char, bool)> {
 
 pub struct EditorView {
     state: Entity<EditorState>,
+    scroll_handle: ScrollHandle,
 }
 
 impl EditorView {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
+            scroll_handle: ScrollHandle::new(),
         }
     }
 }
@@ -405,7 +407,8 @@ impl Render for EditorView {
             .size_full()
             .bg(Hsla::black())
             .text_color(Hsla::white())
-            .overflow_y_hidden()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll_handle)
             .child(
                 div()
                     .flex()
