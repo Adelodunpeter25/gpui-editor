@@ -6,6 +6,7 @@
 //! headless. Model/view types live in `types.rs`, word-wrap in `wrap.rs`;
 //! this file holds the `Render` impl and its paint helpers.
 
+mod diff_view;
 mod types;
 mod wrap;
 
@@ -19,11 +20,12 @@ use syntax::Capture;
 use types::{RowInteraction, StyledSpan};
 use wrap::{clip_to_subrange, WrapCache};
 
+pub use diff_view::{DiffState, DiffView};
 pub use types::{EditorState, EditorView, IndentOptions, Mode, SearchState, Selection};
 
 /// Fixed row height every editor line renders at. Virtualized scroll math in
 /// `EditorView::render` depends on this staying constant per `render_line`.
-const LINE_HEIGHT: Pixels = px(22.0);
+pub(crate) const LINE_HEIGHT: Pixels = px(22.0);
 
 // ---------------------------------------------------------------------------
 // Actions + view rendering
@@ -260,7 +262,7 @@ impl Render for EditorView {
 /// Minimum thumb height so a huge file never shrinks it to invisibility.
 const MIN_SCROLLBAR_THUMB: Pixels = px(24.0);
 
-fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels {
+pub(crate) fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels {
     let content_height = track_height + max_offset_y;
     if content_height <= px(0.) {
         return track_height;
@@ -272,7 +274,7 @@ fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels 
 /// Thin draggable scrollbar for the editor's `uniform_list`, hand-rolled
 /// since raw gpui has no standalone scrollbar widget (only baked into its
 /// `list()` element, which this editor doesn't use).
-fn render_scrollbar(
+pub(crate) fn render_scrollbar(
     scroll_handle: UniformListScrollHandle,
     thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
 ) -> impl IntoElement {
@@ -327,7 +329,7 @@ fn row_local_selection(
     }
 }
 
-fn color_for(capture: Capture) -> Hsla {
+pub(crate) fn color_for(capture: Capture) -> Hsla {
     match capture {
         Capture::Keyword => rgb(0x89b4fa).into(),
         Capture::String => rgb(0xa6e3a1).into(),
@@ -432,7 +434,7 @@ fn render_line(
         )
 }
 
-fn render_spans(
+pub(crate) fn render_spans(
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,

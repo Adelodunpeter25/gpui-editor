@@ -7,4 +7,5 @@ edition = "2021"
 gpui = { workspace = true }
 edit-buffer = { workspace = true }
 syntax = { workspace = true }
+diff = { workspace = true }
 ropey = { workspace = true }
