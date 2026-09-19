@@ -83,6 +83,18 @@ fn resolve_color(span: &StyledSpan) -> Hsla {
 /// pixel-perfect, which is cosmetic (see wrap.md's scope notes).
 const WRAP_GUTTER_RESERVE: Pixels = px(72.0);
 
+/// Bucket size for wrap-width rounding: a live window resize fires the
+/// measuring `canvas` (and so a potential `WrapCache` rebuild, which
+/// re-shapes every row) on nearly every frame. Rounding to a coarse bucket
+/// means a rebuild only happens once every ~4 monospace chars of resize
+/// instead of every single pixel — the resize-drag equivalent of the
+/// existing debounce-on-edit pattern the rest of the codebase uses.
+const WRAP_WIDTH_BUCKET: f32 = 32.0;
+
+fn round_wrap_width(width: Pixels) -> Pixels {
+    px((f32::from(width) / WRAP_WIDTH_BUCKET).round() * WRAP_WIDTH_BUCKET)
+}
+
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_snapshot_version = self.state.read(cx).version();
@@ -98,7 +110,7 @@ impl Render for EditorView {
         };
 
         let wrap_width = if wrap_enabled && measured_width > WRAP_GUTTER_RESERVE {
-            Some(measured_width - WRAP_GUTTER_RESERVE)
+            Some(round_wrap_width(measured_width - WRAP_GUTTER_RESERVE))
         } else if wrap_enabled {
             // Not measured yet (first frame): wrap at *something* rather
             // than not at all, corrected next frame once measured.
