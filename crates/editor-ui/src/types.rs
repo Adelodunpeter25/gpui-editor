@@ -76,6 +76,35 @@ impl Default for IndentOptions {
     }
 }
 
+/// The font every row renders, is measured with, and is wrapped against —
+/// one place instead of the string literal `"JetBrains Mono"` previously
+/// duplicated across `render_line`, `measure_char_width`, and
+/// `WrapCache::rebuild`. Those three disagreeing silently (paint vs. mouse
+/// hit-testing vs. wrap points) was the actual bug class this fixes, not
+/// just "it was hardcoded" — a host app can now override it in one place
+/// and every consumer picks it up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontConfig {
+    pub family: SharedString,
+    pub size: Pixels,
+    /// Row height. Kept as an explicit field rather than derived from
+    /// `size` by a ratio — virtualized rendering (`uniform_list`) needs an
+    /// exact fixed row height, and letting a host app pick its own
+    /// family/size without also being able to tune line height would just
+    /// move the "these have to agree" problem instead of fixing it.
+    pub line_height: Pixels,
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            family: SharedString::from("JetBrains Mono"),
+            size: px(14.0),
+            line_height: px(22.0),
+        }
+    }
+}
+
 pub struct EditorState {
     buffer: Buffer,
     language: Option<&'static Language>,
@@ -90,6 +119,7 @@ pub struct EditorState {
     /// render-time concern owned by `EditorView`'s `WrapCache` (needs a
     /// `Window`/text system), not this GPUI-free model.
     wrap_enabled: bool,
+    font: FontConfig,
     // Row -> highlight spans clipped to that row (rebuilt on edit/highlight).
     // M1 moves this to a shaped-line cache keyed by (row, version).
     // `pub(crate)`: lib.rs's render path reads this directly per visible row.
@@ -131,6 +161,7 @@ impl EditorState {
             search: SearchState::default(),
             indent: IndentOptions::default(),
             wrap_enabled: false,
+            font: FontConfig::default(),
             row_spans: Vec::new(),
         };
         this.rebuild_row_spans();
@@ -175,6 +206,10 @@ impl EditorState {
         self.wrap_enabled
     }
 
+    pub fn font(&self) -> &FontConfig {
+        &self.font
+    }
+
     pub fn line_text(&self, row: u32) -> String {
         self.buffer.line_text(row)
     }
@@ -204,6 +239,15 @@ impl EditorState {
 
     pub fn set_wrap_enabled(&mut self, enabled: bool) {
         self.wrap_enabled = enabled;
+    }
+
+    pub fn with_font(mut self, font: FontConfig) -> Self {
+        self.font = font;
+        self
+    }
+
+    pub fn set_font(&mut self, font: FontConfig) {
+        self.font = font;
     }
 
     pub fn set_language(&mut self, language: Option<&'static Language>) {
@@ -456,9 +500,10 @@ pub struct EditorView {
     /// multiple of `LINE_HEIGHT` so scrolling never shows a half-clipped row.
     pub(crate) viewport_height: Rc<Cell<Pixels>>,
     /// Monospace glyph advance width, measured lazily on first mouse
-    /// interaction and cached (same font/size every row, so one shape call
-    /// suffices for pixel -> column hit testing).
-    pub(crate) char_width: Rc<Cell<Option<Pixels>>>,
+    /// interaction and cached alongside the `FontConfig` it was measured
+    /// for, so a runtime font change invalidates it instead of silently
+    /// reusing a stale width for hit-testing.
+    pub(crate) char_width: Rc<RefCell<Option<(FontConfig, Pixels)>>>,
     /// True while a left-mouse selection drag is in progress.
     pub(crate) selecting: Rc<Cell<bool>>,
     /// Fixed end of the in-progress drag; the other end follows the mouse.
@@ -482,7 +527,7 @@ impl EditorView {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             viewport_height: Rc::new(Cell::new(px(0.))),
-            char_width: Rc::new(Cell::new(None)),
+            char_width: Rc::new(RefCell::new(None)),
             selecting: Rc::new(Cell::new(false)),
             drag_anchor: Rc::new(Cell::new(None)),
             thumb_dragging: Rc::new(Cell::new(None)),
@@ -509,7 +554,7 @@ impl EditorView {
 #[derive(Clone)]
 pub(crate) struct RowInteraction {
     pub(crate) state: Entity<EditorState>,
-    pub(crate) char_width: Rc<Cell<Option<Pixels>>>,
+    pub(crate) char_width: Rc<RefCell<Option<(FontConfig, Pixels)>>>,
     pub(crate) selecting: Rc<Cell<bool>>,
     pub(crate) drag_anchor: Rc<Cell<Option<usize>>>,
 }

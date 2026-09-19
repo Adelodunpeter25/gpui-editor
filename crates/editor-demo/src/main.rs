@@ -8,7 +8,7 @@ use types::DemoApp;
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
-actions!(demo, [OpenFile, Quit, ToggleWrap, ToggleDiff]);
+actions!(demo, [OpenFile, Quit, ToggleWrap, ToggleDiff, ToggleFont]);
 
 const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
@@ -41,6 +41,7 @@ impl Render for DemoApp {
 
         let wrap_enabled = self.state.read(cx).wrap_enabled();
         let showing_diff = self.showing_diff;
+        let using_custom_font = self.using_custom_font;
         let diff = self.diff_state.read(cx);
         let diff_label = if diff.is_empty() {
             "Diff (no changes)".to_string()
@@ -66,6 +67,9 @@ impl Render for DemoApp {
             }))
             .on_action(cx.listener(|this, _: &ToggleDiff, _window, cx| {
                 this.toggle_diff(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFont, _window, cx| {
+                this.toggle_font(cx);
             }))
             // Top toolbar / status bar with Open button
             .child(
@@ -164,6 +168,34 @@ impl Render for DemoApp {
                             )
                             .child(
                                 div()
+                                    .id("font-toggle")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(if using_custom_font {
+                                        rgb(0x89b4fa)
+                                    } else {
+                                        rgb(0x313244)
+                                    })
+                                    .hover(|s| s.bg(rgb(0x45475a)))
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(if using_custom_font {
+                                        rgb(0x1e1e2e)
+                                    } else {
+                                        rgb(0xcdd6f4)
+                                    })
+                                    .child(if using_custom_font {
+                                        "Font: Menlo"
+                                    } else {
+                                        "Font: JetBrains Mono"
+                                    })
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_font(cx);
+                                    })),
+                            )
+                            .child(
+                                div()
                                     .text_xs()
                                     .px_2()
                                     .py_0p5()
@@ -216,6 +248,7 @@ fn main() {
                 items: vec![
                     MenuItem::action("Toggle Word Wrap", ToggleWrap),
                     MenuItem::action("Toggle Diff View", ToggleDiff),
+                    MenuItem::action("Toggle Font (Menlo)", ToggleFont),
                 ],
                 disabled: false,
             },
@@ -229,6 +262,8 @@ fn main() {
             KeyBinding::new("ctrl-alt-z", ToggleWrap, Some("DemoApp")),
             KeyBinding::new("cmd-alt-d", ToggleDiff, Some("DemoApp")),
             KeyBinding::new("ctrl-alt-d", ToggleDiff, Some("DemoApp")),
+            KeyBinding::new("cmd-alt-f", ToggleFont, Some("DemoApp")),
+            KeyBinding::new("ctrl-alt-f", ToggleFont, Some("DemoApp")),
         ]);
         editor_ui::init(cx);
 

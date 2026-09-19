@@ -63,18 +63,36 @@ failed to paint, no panic, no error). Two different revs can also just fail
 to compile together (mismatched types at the same `"0.2.2"` label), since
 there's no real version compatibility guarantee between commits.
 
-## 2. Register a monospace font
+## 2. Font: configurable, but registration is still on you
 
-`editor-ui` hardcodes the font family name `"JetBrains Mono"` for editor
-rows (`crates/editor-ui/src/lib.rs`, `render_line`) but does **not** bundle
-or register the font itself — only `editor-demo` does that, since font
-bundling is an app concern (which weights, license, bundle size). If your
-host app doesn't already have a font registered under that exact family
-name, editor text will fall back to a font gpui *can* resolve, which won't
-be monospace and will misalign the line-number gutter.
+`editor-ui` defaults to `"JetBrains Mono"` at 14px (22px line height), but
+this is a real, overridable `FontConfig` now — not a hardcoded string
+scattered across paint/measure/wrap call sites (an earlier version of this
+crate had exactly that bug: three separate literals that could silently
+disagree with each other). Override it via `EditorState`/`diff::DiffState`:
 
 ```rust
-// once at startup, before opening any window
+use editor_ui::FontConfig;
+
+state.update(cx, |editor, _cx| {
+    editor.set_font(FontConfig {
+        family: "Menlo".into(), // or any family gpui can resolve
+        size: gpui::px(15.0),
+        line_height: gpui::px(24.0),
+    });
+});
+```
+
+`editor-ui` still does **not** bundle or register any font file itself —
+that stays an app concern (which weights, license, bundle size). If you
+pick a family gpui can't resolve (not a system font, not registered via
+`add_fonts`), the render falls back to whatever gpui's fallback stack
+resolves instead, which likely won't be monospace and will misalign the
+line-number gutter — same failure mode as before, just now something you
+opt into by picking a bad family name rather than something baked in.
+
+```rust
+// once at startup, before opening any window, if bundling your own font
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
@@ -86,10 +104,8 @@ app.run(|cx: &mut App| {
 });
 ```
 
-If you want a different monospace font, there's currently no
-`with_font_family()` setter — you'd need to change the hardcoded string in
-`editor-ui` (a small, worthwhile addition if you need this; not built since
-no consumer has needed it yet).
+A system-installed monospace font (e.g. `"Menlo"` on macOS) needs no
+`add_fonts` call at all — gpui resolves it directly.
 
 ## 3. Bind the crate's actions once
 
@@ -151,8 +167,10 @@ handful of named tokens.
 - No cursor, no typing, no `cmd-z` — readonly viewer only.
 - No search overlay, no bracket-match rendering (the model methods exist on
   `EditorState`, nothing calls them from `EditorView` yet).
-- No `with_font_family()` — font is hardcoded to `"JetBrains Mono"` (§2).
-- No diff view (`diff.md` has the research + plan, not implemented).
+- `DiffState`/`DiffView` (`editor_ui::{DiffState, DiffView}`) highlight each
+  line independently, not the full old/new text once — a multi-line
+  construct spanning a change can highlight incorrectly on adjacent
+  unchanged lines. See `diff_view.rs`'s module doc for the full tradeoff.
 
 Selection has a known rough perf edge during drag (flagged, not yet
 profiled/fixed) — fine for normal use, worth knowing about if you're

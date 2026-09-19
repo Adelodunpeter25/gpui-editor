@@ -23,12 +23,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 use syntax::{Language, ThemePreset};
 
-use crate::{color_for, render_scrollbar, render_spans, LINE_HEIGHT};
+use crate::types::FontConfig;
+use crate::{color_for, render_scrollbar, render_spans};
 
 pub struct DiffState {
     pub(crate) result: diff::DiffResult,
     language: Option<&'static Language>,
     theme: ThemePreset,
+    font: FontConfig,
 }
 
 impl DiffState {
@@ -37,11 +39,17 @@ impl DiffState {
             result: diff::diff_lines(old, new),
             language,
             theme: ThemePreset::GitHubDark,
+            font: FontConfig::default(),
         }
     }
 
     pub fn with_theme(mut self, theme: ThemePreset) -> Self {
         self.theme = theme;
+        self
+    }
+
+    pub fn with_font(mut self, font: FontConfig) -> Self {
+        self.font = font;
         self
     }
 
@@ -57,12 +65,20 @@ impl DiffState {
         self.theme = theme;
     }
 
+    pub fn set_font(&mut self, font: FontConfig) {
+        self.font = font;
+    }
+
     pub fn language(&self) -> Option<&'static Language> {
         self.language
     }
 
     pub fn theme(&self) -> ThemePreset {
         self.theme
+    }
+
+    pub fn font(&self) -> &FontConfig {
+        &self.font
     }
 
     pub fn line_count(&self) -> usize {
@@ -106,7 +122,12 @@ fn gutter_number(n: Option<u32>) -> String {
     n.map(|n| format!("{n:>4}")).unwrap_or_else(|| " ".repeat(4))
 }
 
-fn render_diff_line(line: &diff::DiffLine, language: Option<&'static Language>, theme: ThemePreset) -> impl IntoElement {
+fn render_diff_line(
+    line: &diff::DiffLine,
+    language: Option<&'static Language>,
+    theme: ThemePreset,
+    font: &FontConfig,
+) -> impl IntoElement {
     let (marker, bg, marker_color) = match line.kind {
         diff::DiffLineKind::Added => ("+", Some(rgba(0x2ea04326)), rgb(0x3fb950)),
         diff::DiffLineKind::Removed => ("-", Some(rgba(0xf8514926)), rgb(0xf85149)),
@@ -131,9 +152,9 @@ fn render_diff_line(line: &diff::DiffLine, language: Option<&'static Language>, 
         .flex_row()
         .items_center()
         .px_2()
-        .h(LINE_HEIGHT)
-        .font_family("JetBrains Mono")
-        .text_sm();
+        .h(font.line_height)
+        .font_family(font.family.clone())
+        .text_size(font.size);
     if let Some(bg) = bg {
         row = row.bg(bg);
     }
@@ -172,11 +193,12 @@ fn render_diff_line(line: &diff::DiffLine, language: Option<&'static Language>, 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let line_count = self.state.read(cx).line_count();
+        let font = self.state.read(cx).font().clone();
 
         let measured = self.viewport_height.get();
-        let rows_that_fit = (measured / LINE_HEIGHT).floor();
+        let rows_that_fit = (measured / font.line_height).floor();
         let list_height = if rows_that_fit > 0. {
-            LINE_HEIGHT * rows_that_fit
+            font.line_height * rows_that_fit
         } else {
             measured
         };
@@ -204,8 +226,11 @@ impl Render for DiffView {
                         let state = this.state.read(cx);
                         let language = state.language();
                         let theme = state.theme();
+                        let font = state.font();
                         range
-                            .map(|ix| render_diff_line(&state.result.lines[ix], language, theme))
+                            .map(|ix| {
+                                render_diff_line(&state.result.lines[ix], language, theme, font)
+                            })
                             .collect()
                     }),
                 )

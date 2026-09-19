@@ -9,15 +9,17 @@
 use gpui::*;
 use std::ops::Range;
 
-use crate::types::EditorState;
+use crate::types::{EditorState, FontConfig};
 
 /// Maps buffer rows to visual (wrapped) rows. Rebuilt whenever the buffer
-/// version, wrap width, or wrap-enabled flag changes — never per frame.
-/// `wrap_width: None` means wrap is off; every buffer row is exactly one
-/// visual row (today's behavior), computed without touching the text system.
+/// version, wrap width, wrap-enabled flag, or font changes — never per
+/// frame. `wrap_width: None` means wrap is off; every buffer row is exactly
+/// one visual row (today's behavior), computed without touching the text
+/// system.
 pub(crate) struct WrapCache {
     wrap_width: Option<Pixels>,
     buffer_version: u64,
+    font: FontConfig,
     /// Per buffer row: row-local char offsets where a visual break occurs
     /// (end-exclusive boundaries of every sub-line except the last). Empty
     /// means the row is a single visual line.
@@ -33,6 +35,7 @@ impl Default for WrapCache {
         Self {
             wrap_width: None,
             buffer_version: u64::MAX,
+            font: FontConfig::default(),
             row_breaks: Vec::new(),
             visual_index: Vec::new(),
         }
@@ -40,15 +43,25 @@ impl Default for WrapCache {
 }
 
 impl WrapCache {
-    pub(crate) fn is_stale(&self, wrap_width: Option<Pixels>, buffer_version: u64) -> bool {
-        self.wrap_width != wrap_width || self.buffer_version != buffer_version
+    pub(crate) fn is_stale(
+        &self,
+        wrap_width: Option<Pixels>,
+        buffer_version: u64,
+        font: &FontConfig,
+    ) -> bool {
+        self.wrap_width != wrap_width || self.buffer_version != buffer_version || &self.font != font
     }
 
     /// Rebuild for the given wrap width (`None` disables wrapping). Uses
     /// gpui's own `LineWrapper` (cached per-char glyph widths internally),
     /// so this is O(total buffer chars) once, not per row measured from
     /// scratch — same cost class as `EditorState::rebuild_row_spans`.
-    pub(crate) fn rebuild(state: &EditorState, wrap_width: Option<Pixels>, window: &mut Window) -> Self {
+    pub(crate) fn rebuild(
+        state: &EditorState,
+        wrap_width: Option<Pixels>,
+        font: &FontConfig,
+        window: &mut Window,
+    ) -> Self {
         let rows = state.line_count();
         let mut row_breaks: Vec<Vec<usize>> = Vec::with_capacity(rows as usize);
         let mut visual_index: Vec<(u32, u32)> = Vec::new();
@@ -63,7 +76,7 @@ impl WrapCache {
             Some(width) => {
                 let mut wrapper = window
                     .text_system()
-                    .line_wrapper(font("JetBrains Mono"), px(14.));
+                    .line_wrapper(gpui::font(font.family.clone()), font.size);
                 for row in 0..rows {
                     let text = state.line_text(row);
                     if text.is_empty() {
@@ -91,6 +104,7 @@ impl WrapCache {
         Self {
             wrap_width,
             buffer_version: state.version(),
+            font: font.clone(),
             row_breaks,
             visual_index,
         }

@@ -1,5 +1,6 @@
 use edit_buffer::Point;
-use editor_ui::{EditorState, Mode};
+use editor_ui::{EditorState, FontConfig, Mode};
+use gpui::px;
 
 #[test]
 fn readonly_ignores_insert() {
@@ -79,4 +80,28 @@ fn wrap_is_off_by_default_and_toggleable() {
 fn with_wrap_builder_sets_initial_state() {
     let s = EditorState::readonly("abc", Some(&syntax::RUST)).with_wrap(true);
     assert!(s.wrap_enabled());
+}
+
+#[test]
+fn default_font_matches_prior_hardcoded_values() {
+    let s = EditorState::readonly("abc", Some(&syntax::RUST));
+    assert_eq!(s.font().family.as_ref(), "JetBrains Mono");
+    assert_eq!(s.font().size, px(14.0));
+    assert_eq!(s.font().line_height, px(22.0));
+}
+
+#[test]
+fn font_is_configurable_via_builder_and_setter() {
+    let custom = FontConfig {
+        family: "Menlo".into(),
+        size: px(16.0),
+        line_height: px(24.0),
+    };
+
+    let s = EditorState::readonly("abc", Some(&syntax::RUST)).with_font(custom.clone());
+    assert_eq!(s.font(), &custom);
+
+    let mut s = EditorState::readonly("abc", Some(&syntax::RUST));
+    s.set_font(custom.clone());
+    assert_eq!(s.font(), &custom);
 }

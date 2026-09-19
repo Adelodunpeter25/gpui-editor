@@ -13,7 +13,7 @@ mod wrap;
 use edit_buffer::Point;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use syntax::Capture;
@@ -21,11 +21,7 @@ use types::{RowInteraction, StyledSpan};
 use wrap::{clip_to_subrange, WrapCache};
 
 pub use diff_view::{DiffState, DiffView};
-pub use types::{EditorState, EditorView, IndentOptions, Mode, SearchState, Selection};
-
-/// Fixed row height every editor line renders at. Virtualized scroll math in
-/// `EditorView::render` depends on this staying constant per `render_line`.
-pub(crate) const LINE_HEIGHT: Pixels = px(22.0);
+pub use types::{EditorState, EditorView, FontConfig, IndentOptions, Mode, SearchState, Selection};
 
 // ---------------------------------------------------------------------------
 // Actions + view rendering
@@ -44,14 +40,21 @@ pub fn init(cx: &mut App) {
 }
 
 /// Measure (and cache) the monospace glyph advance width for pixel -> column
-/// hit testing. Same font/size on every row, so one shape call suffices.
-fn measure_char_width(cache: &Rc<Cell<Option<Pixels>>>, window: &mut Window) -> Pixels {
-    if let Some(w) = cache.get() {
-        return w;
+/// hit testing. Cached alongside the `FontConfig` it was measured for, so a
+/// runtime font change re-measures instead of reusing a stale width.
+fn measure_char_width(
+    cache: &Rc<RefCell<Option<(FontConfig, Pixels)>>>,
+    font_config: &FontConfig,
+    window: &mut Window,
+) -> Pixels {
+    if let Some((cached_font, width)) = cache.borrow().as_ref() {
+        if cached_font == font_config {
+            return *width;
+        }
     }
     let run = TextRun {
         len: 1,
-        font: font("JetBrains Mono"),
+        font: font(font_config.family.clone()),
         color: Hsla::white(),
         background_color: None,
         underline: None,
@@ -59,9 +62,9 @@ fn measure_char_width(cache: &Rc<Cell<Option<Pixels>>>, window: &mut Window) -> 
     };
     let width = window
         .text_system()
-        .shape_line("M".into(), px(14.), &[run], None)
+        .shape_line("M".into(), font_config.size, &[run], None)
         .width();
-    cache.set(Some(width));
+    *cache.borrow_mut() = Some((font_config.clone(), width));
     width
 }
 
@@ -101,12 +104,13 @@ impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_snapshot_version = self.state.read(cx).version();
         let wrap_enabled = self.state.read(cx).wrap_enabled();
+        let font = self.state.read(cx).font().clone();
 
         let measured_height = self.viewport_height.get();
         let measured_width = self.viewport_width.get();
-        let rows_that_fit = (measured_height / LINE_HEIGHT).floor();
+        let rows_that_fit = (measured_height / font.line_height).floor();
         let list_height = if rows_that_fit > 0. {
-            LINE_HEIGHT * rows_that_fit
+            font.line_height * rows_that_fit
         } else {
             measured_height
         };
@@ -124,11 +128,11 @@ impl Render for EditorView {
         if self
             .wrap_cache
             .borrow()
-            .is_stale(wrap_width, state_snapshot_version)
+            .is_stale(wrap_width, state_snapshot_version, &font)
         {
             let rebuilt = {
                 let state = self.state.read(cx);
-                WrapCache::rebuild(state, wrap_width, window)
+                WrapCache::rebuild(state, wrap_width, &font, window)
             };
             *self.wrap_cache.borrow_mut() = rebuilt;
         }
@@ -137,6 +141,7 @@ impl Render for EditorView {
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
         let wrap_cache = self.wrap_cache.clone();
+        let row_font = font.clone();
         let interaction = RowInteraction {
             state: self.state.clone(),
             char_width: self.char_width.clone(),
@@ -208,15 +213,12 @@ impl Render for EditorView {
                                 let row_end = state.row_end_offset(buffer_row);
                                 let row_selection = row_local_selection(&selection, row_start, row_end)
                                     .and_then(|s| clip_to_subrange(&s, &sub_range));
-                                render_line(
-                                    buffer_row,
-                                    sub == 0,
-                                    text,
-                                    runs,
-                                    row_selection,
-                                    sub_range.start as u32,
-                                    interaction.clone(),
-                                )
+                                let meta = RowMeta {
+                                    row: buffer_row,
+                                    show_line_number: sub == 0,
+                                    col_offset: sub_range.start as u32,
+                                };
+                                render_line(meta, text, runs, row_selection, row_font.clone(), interaction.clone())
                             })
                             .collect()
                     }),
@@ -344,29 +346,45 @@ pub(crate) fn color_for(capture: Capture) -> Hsla {
 /// Selection wash color: translucent blue behind selected glyphs.
 const SELECTION_BG: u32 = 0x3b82f680;
 
-fn render_line(
+/// Bundles a rendered row's positional bookkeeping (as opposed to its
+/// content/styling) into one value — keeps `render_line`'s own argument
+/// count from creeping past what a single glance can take in.
+struct RowMeta {
     row: u32,
     show_line_number: bool,
+    col_offset: u32,
+}
+
+fn render_line(
+    meta: RowMeta,
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
-    col_offset: u32,
+    font: FontConfig,
     interaction: RowInteraction,
 ) -> impl IntoElement {
+    let RowMeta {
+        row,
+        show_line_number,
+        col_offset,
+    } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
     } else {
         String::new()
     };
     let row_len = text.chars().count();
+    let line_height = font.line_height;
 
     let content_x = Rc::new(Cell::new(px(0.)));
     let measure_x = content_x.clone();
 
     let down = interaction.clone();
     let down_content_x = content_x.clone();
+    let down_font = font.clone();
     let move_ = interaction.clone();
     let move_content_x = content_x;
+    let move_font = font.clone();
 
     div()
         .id(("editor-line", row as usize))
@@ -374,9 +392,9 @@ fn render_line(
         .flex_row()
         .items_center()
         .px_3()
-        .h(LINE_HEIGHT)
-        .font_family("JetBrains Mono")
-        .text_sm()
+        .h(line_height)
+        .font_family(font.family.clone())
+        .text_size(font.size)
         .child(
             div()
                 .w_12()
@@ -402,7 +420,7 @@ fn render_line(
                 )
                 .child(render_spans(text, runs, selection))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                    let width = measure_char_width(&down.char_width, window);
+                    let width = measure_char_width(&down.char_width, &down_font, window);
                     let local_x = event.position.x - down_content_x.get();
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
@@ -419,7 +437,7 @@ fn render_line(
                     let Some(anchor) = move_.drag_anchor.get() else {
                         return;
                     };
-                    let width = measure_char_width(&move_.char_width, window);
+                    let width = measure_char_width(&move_.char_width, &move_font, window);
                     let local_x = event.position.x - move_content_x.get();
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });

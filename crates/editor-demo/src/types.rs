@@ -2,7 +2,7 @@
 //! `main()` stay in `main.rs`, next to the actions/menus/keybindings that
 //! drive them.
 
-use editor_ui::{DiffState, DiffView, EditorState, EditorView};
+use editor_ui::{DiffState, DiffView, EditorState, EditorView, FontConfig};
 use gpui::*;
 use std::fs;
 use std::path::PathBuf;
@@ -19,6 +19,10 @@ pub(crate) struct DemoApp {
     pub(crate) diff_state: Entity<DiffState>,
     pub(crate) diff_view: Entity<DiffView>,
     pub(crate) showing_diff: bool,
+    /// True while the demo's alternate font (macOS system "Menlo", not
+    /// bundled — proves `FontConfig` is a real override point, not just a
+    /// renamed constant) is active instead of the bundled default.
+    pub(crate) using_custom_font: bool,
     pub(crate) file_path: Option<PathBuf>,
     pub(crate) focus_handle: FocusHandle,
 }
@@ -39,9 +43,26 @@ impl DemoApp {
             diff_state,
             diff_view,
             showing_diff: false,
+            using_custom_font: false,
             file_path: None,
             focus_handle,
         }
+    }
+
+    pub(crate) fn toggle_font(&mut self, cx: &mut Context<Self>) {
+        self.using_custom_font = !self.using_custom_font;
+        let font = if self.using_custom_font {
+            FontConfig {
+                family: "Menlo".into(),
+                size: px(15.0),
+                line_height: px(24.0),
+            }
+        } else {
+            FontConfig::default()
+        };
+        self.state.update(cx, |editor, _cx| editor.set_font(font.clone()));
+        self.diff_state.update(cx, |diff, _cx| diff.set_font(font));
+        cx.notify();
     }
 
     pub(crate) fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
