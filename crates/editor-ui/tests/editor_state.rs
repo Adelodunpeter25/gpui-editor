@@ -64,3 +64,19 @@ fn point_to_offset_matches_row_start() {
     assert_eq!(s.point_to_offset(Point { row: 1, col: 0 }), 4);
     assert_eq!(s.point_to_offset(Point { row: 1, col: 2 }), 6);
 }
+
+#[test]
+fn wrap_is_off_by_default_and_toggleable() {
+    let mut s = EditorState::readonly("abc", Some(&syntax::RUST));
+    assert!(!s.wrap_enabled());
+    s.set_wrap_enabled(true);
+    assert!(s.wrap_enabled());
+    s.set_wrap_enabled(false);
+    assert!(!s.wrap_enabled());
+}
+
+#[test]
+fn with_wrap_builder_sets_initial_state() {
+    let s = EditorState::readonly("abc", Some(&syntax::RUST)).with_wrap(true);
+    assert!(s.wrap_enabled());
+}

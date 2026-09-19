@@ -34,6 +34,12 @@ impl DemoApp {
         }
     }
 
+    pub(crate) fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.state.read(cx).wrap_enabled();
+        self.state.update(cx, |editor, _cx| editor.set_wrap_enabled(!enabled));
+        cx.notify();
+    }
+
     pub(crate) fn open_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             if let Ok(content) = fs::read_to_string(&path) {

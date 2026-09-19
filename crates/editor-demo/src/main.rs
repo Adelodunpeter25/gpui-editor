@@ -7,7 +7,7 @@ use types::DemoApp;
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
-actions!(demo, [OpenFile, Quit]);
+actions!(demo, [OpenFile, Quit, ToggleWrap]);
 
 const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
@@ -38,6 +38,8 @@ impl Render for DemoApp {
             .map(|l| l.name)
             .unwrap_or("plain text");
 
+        let wrap_enabled = self.state.read(cx).wrap_enabled();
+
         div()
             .size_full()
             .flex()
@@ -50,6 +52,9 @@ impl Render for DemoApp {
             }))
             .on_action(cx.listener(|_this, _: &Quit, _window, cx| {
                 cx.quit();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleWrap, _window, cx| {
+                this.toggle_wrap(cx);
             }))
             // Top toolbar / status bar with Open button
             .child(
@@ -94,13 +99,44 @@ impl Render for DemoApp {
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .px_2()
-                            .py_0p5()
-                            .rounded_md()
-                            .bg(rgb(0x313244))
-                            .text_color(rgb(0x89b4fa))
-                            .child(format!("Language: {lang_name}")),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("wrap-toggle")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(if wrap_enabled {
+                                        rgb(0x89b4fa)
+                                    } else {
+                                        rgb(0x313244)
+                                    })
+                                    .hover(|s| s.bg(rgb(0x45475a)))
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(if wrap_enabled {
+                                        rgb(0x1e1e2e)
+                                    } else {
+                                        rgb(0xcdd6f4)
+                                    })
+                                    .child("Wrap")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_wrap(cx);
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(rgb(0x313244))
+                                    .text_color(rgb(0x89b4fa))
+                                    .child(format!("Language: {lang_name}")),
+                            ),
                     ),
             )
             // Editor main area
@@ -134,12 +170,21 @@ fn main() {
                 ],
                 disabled: false,
             },
+            Menu {
+                name: "View".into(),
+                items: vec![
+                    MenuItem::action("Toggle Word Wrap", ToggleWrap),
+                ],
+                disabled: false,
+            },
         ]);
 
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("ctrl-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-alt-z", ToggleWrap, Some("DemoApp")),
+            KeyBinding::new("ctrl-alt-z", ToggleWrap, Some("DemoApp")),
         ]);
         editor_ui::init(cx);
 

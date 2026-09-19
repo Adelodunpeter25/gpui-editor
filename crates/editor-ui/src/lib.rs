@@ -15,7 +15,7 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use syntax::Capture;
-use types::{RowInteraction, StyledSpan};
+use types::{clip_to_subrange, RowInteraction, StyledSpan, WrapCache};
 
 pub use types::{EditorState, EditorView, IndentOptions, Mode, SearchState, Selection};
 
@@ -74,18 +74,53 @@ fn resolve_color(span: &StyledSpan) -> Hsla {
         .unwrap_or_else(|| color_for(span.capture))
 }
 
-impl Render for EditorView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line_count = self.state.read(cx).line_count() as usize;
+/// Approximate pixel width consumed by the line-number gutter (`w_12()`,
+/// 3rem) + the row's horizontal padding (`px_3()` x2) before wrapped text
+/// content actually starts. Used only to size the word-wrap width; a few
+/// pixels of slack here just wraps a character or two earlier/later than
+/// pixel-perfect, which is cosmetic (see wrap.md's scope notes).
+const WRAP_GUTTER_RESERVE: Pixels = px(72.0);
 
-        let measured = self.viewport_height.get();
-        let rows_that_fit = (measured / LINE_HEIGHT).floor();
+impl Render for EditorView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state_snapshot_version = self.state.read(cx).version();
+        let wrap_enabled = self.state.read(cx).wrap_enabled();
+
+        let measured_height = self.viewport_height.get();
+        let measured_width = self.viewport_width.get();
+        let rows_that_fit = (measured_height / LINE_HEIGHT).floor();
         let list_height = if rows_that_fit > 0. {
             LINE_HEIGHT * rows_that_fit
         } else {
-            measured
+            measured_height
         };
+
+        let wrap_width = if wrap_enabled && measured_width > WRAP_GUTTER_RESERVE {
+            Some(measured_width - WRAP_GUTTER_RESERVE)
+        } else if wrap_enabled {
+            // Not measured yet (first frame): wrap at *something* rather
+            // than not at all, corrected next frame once measured.
+            Some(px(400.))
+        } else {
+            None
+        };
+
+        if self
+            .wrap_cache
+            .borrow()
+            .is_stale(wrap_width, state_snapshot_version)
+        {
+            let rebuilt = {
+                let state = self.state.read(cx);
+                WrapCache::rebuild(state, wrap_width, window)
+            };
+            *self.wrap_cache.borrow_mut() = rebuilt;
+        }
+        let visual_row_count = self.wrap_cache.borrow().visual_row_count();
+
         let viewport_height = self.viewport_height.clone();
+        let viewport_width = self.viewport_width.clone();
+        let wrap_cache = self.wrap_cache.clone();
         let interaction = RowInteraction {
             state: self.state.clone(),
             char_width: self.char_width.clone(),
@@ -108,10 +143,14 @@ impl Render for EditorView {
                 move |_event, _window, _cx| selecting.set(false)
             })
             // Paint-less sibling purely to measure the container's pixel
-            // height each frame, so the list below can snap to whole lines.
+            // size each frame: height snaps the list to whole lines, width
+            // drives word-wrap's wrap point.
             .child(
                 canvas(
-                    move |bounds, _window, _cx| viewport_height.set(bounds.size.height),
+                    move |bounds, _window, _cx| {
+                        viewport_height.set(bounds.size.height);
+                        viewport_width.set(bounds.size.width);
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()
@@ -120,32 +159,46 @@ impl Render for EditorView {
             .child(
                 uniform_list(
                     "gpui-editor-lines",
-                    line_count,
+                    visual_row_count,
                     cx.processor(move |this, range: Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
+                        let cache = wrap_cache.borrow();
                         range
-                            .map(|row| {
-                                let text = state.line_text(row as u32);
+                            .map(|visual_ix| {
+                                let (buffer_row, sub) = cache.resolve(visual_ix);
+                                let full_text = state.line_text(buffer_row);
+                                let row_len = full_text.chars().count();
+                                let sub_range = cache.sub_range(buffer_row, sub, row_len);
+                                let text: String = full_text
+                                    .chars()
+                                    .skip(sub_range.start)
+                                    .take(sub_range.end - sub_range.start)
+                                    .collect();
                                 let runs = state
                                     .row_spans
-                                    .get(row)
+                                    .get(buffer_row as usize)
                                     .map(|spans| {
                                         spans
                                             .iter()
-                                            .map(|s| (s.range.clone(), resolve_color(s)))
+                                            .filter_map(|s| {
+                                                clip_to_subrange(&s.range, &sub_range)
+                                                    .map(|r| (r, resolve_color(s)))
+                                            })
                                             .collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default();
-                                let row_start = state.row_start_offset(row as u32);
-                                let row_end = state.row_end_offset(row as u32);
-                                let row_selection =
-                                    row_local_selection(&selection, row_start, row_end);
+                                let row_start = state.row_start_offset(buffer_row);
+                                let row_end = state.row_end_offset(buffer_row);
+                                let row_selection = row_local_selection(&selection, row_start, row_end)
+                                    .and_then(|s| clip_to_subrange(&s, &sub_range));
                                 render_line(
-                                    row as u32,
+                                    buffer_row,
+                                    sub == 0,
                                     text,
                                     runs,
                                     row_selection,
+                                    sub_range.start as u32,
                                     interaction.clone(),
                                 )
                             })
@@ -277,12 +330,18 @@ const SELECTION_BG: u32 = 0x3b82f680;
 
 fn render_line(
     row: u32,
+    show_line_number: bool,
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
+    col_offset: u32,
     interaction: RowInteraction,
 ) -> impl IntoElement {
-    let line_no = format!("{:>4}", row + 1);
+    let line_no = if show_line_number {
+        format!("{:>4}", row + 1)
+    } else {
+        String::new()
+    };
     let row_len = text.chars().count();
 
     let content_x = Rc::new(Cell::new(px(0.)));
@@ -329,7 +388,7 @@ fn render_line(
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, window);
                     let local_x = event.position.x - down_content_x.get();
-                    let col = column_for_x(local_x, width, row_len);
+                    let col = col_offset + column_for_x(local_x, width, row_len);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
                     down.drag_anchor.set(Some(offset));
                     down.selecting.set(true);
@@ -346,7 +405,7 @@ fn render_line(
                     };
                     let width = measure_char_width(&move_.char_width, window);
                     let local_x = event.position.x - move_content_x.get();
-                    let col = column_for_x(local_x, width, row_len);
+                    let col = col_offset + column_for_x(local_x, width, row_len);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });
                     let range = if anchor <= head {
                         anchor..head
