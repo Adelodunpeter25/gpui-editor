@@ -253,7 +253,7 @@ fn render_diff_line(
             .w_10()
             .h_full()
             .flex_shrink_0()
-            .border_r_1()
+            .border_r_2()
             .border_color(rgba(0xffffff1a))
             .text_color(rgb(0x585b70))
             .child(new_label),

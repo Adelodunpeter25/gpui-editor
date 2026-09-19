@@ -82,12 +82,12 @@ fn resolve_color(span: &StyledSpan) -> Hsla {
         .unwrap_or_else(|| color_for(span.capture))
 }
 
-/// Approximate pixel width consumed by the line-number gutter (`w_12()`,
-/// 3rem) + the row's horizontal padding (`px_3()` x2) before wrapped text
+/// Approximate pixel width consumed by the line-number gutter (`w_10()`,
+/// 2.5rem) + the row's horizontal padding (`px_3()` x2) before wrapped text
 /// content actually starts. Used only to size the word-wrap width; a few
 /// pixels of slack here just wraps a character or two earlier/later than
 /// pixel-perfect, which is cosmetic (see wrap.md's scope notes).
-const WRAP_GUTTER_RESERVE: Pixels = px(72.0);
+const WRAP_GUTTER_RESERVE: Pixels = px(64.0);
 
 /// Bucket size for wrap-width rounding: a live window resize fires the
 /// measuring `canvas` (and so a potential `WrapCache` rebuild, which
@@ -101,13 +101,13 @@ pub(crate) fn round_wrap_width(width: Pixels) -> Pixels {
     px((f32::from(width) / WRAP_WIDTH_BUCKET).round() * WRAP_WIDTH_BUCKET)
 }
 
-/// Row left padding (`px_3()` = 0.75rem) + gutter width (`w_12()` = 3rem) =
+/// Row left padding (`px_3()` = 0.75rem) + gutter width (`w_10()` = 2.5rem) =
 /// where a row's text content actually starts, in rems. Fixed, non-dynamic
 /// layout — computed once per render from `window.rem_size()` rather than
 /// measured via a `canvas` per row (previously: one measurement canvas per
 /// *visible row*, remeasuring an identical value ~30 times a render for no
 /// reason, since every row has the same gutter/padding).
-const CONTENT_X_REM: f32 = 3.75;
+const CONTENT_X_REM: f32 = 3.25;
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -440,10 +440,10 @@ fn render_line(
         .text_size(font.size)
         .child(
             div()
-                .w_12()
+                .w_10()
                 .h_full()
                 .flex_shrink_0()
-                .border_r_1()
+                .border_r_2()
                 .border_color(rgba(0xffffff1a))
                 .text_color(rgb(0x585b70))
                 .child(line_no),
