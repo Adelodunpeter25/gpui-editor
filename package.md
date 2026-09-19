@@ -3,7 +3,34 @@
 A short guide for dropping this crate's code viewer into an existing GPUI
 app. See `implementation.md` for what's actually implemented vs planned.
 
+## 0. Each crate is a separate, independently-pullable feature
+
+This isn't one monolithic package — pull in only what you need:
+
+- **`edit-buffer`** — rope-backed text storage (edit/undo/search/point
+  conversion). Zero GPUI dependency. Useful standalone if you need
+  efficient text storage/editing without any UI at all.
+- **`syntax`** — language registry + `highlight_themed()` (via `lumis`),
+  returning theme-colored spans as plain data. Zero GPUI dependency. Use
+  this alone if you just need syntax-highlighted spans to paint yourself —
+  e.g. coloring fenced code blocks in a markdown renderer — without
+  pulling in the rest of the editor.
+- **`editor-ui`** — the full GPUI scrollable code *viewer*: virtualization,
+  scrollbar, mouse selection, word wrap. Depends on the two crates above.
+  Pull this in only when you actually want a full embeddable file-viewer
+  widget, not just colored text — it carries real weight (scroll/selection
+  machinery) that's wasted on something like a short static code snippet.
+
+They're ordinary path/git dependencies — add whichever ones you need to
+your `Cargo.toml`, independent of the others. The rest of this guide covers
+`editor-ui` specifically, since that's the one with GPUI-integration
+gotchas; `edit-buffer` and `syntax` are plain Rust crates with no special
+setup beyond `cargo add`.
+
 ## 1. Pin the same `gpui` revision — this is the part that actually breaks
+
+(Only relevant if you're pulling in `editor-ui`, which is the only crate of
+the three with a `gpui` dependency at all.)
 
 `gpui`/`gpui_platform` aren't on crates.io with real semver; they're pinned
 to an exact git commit here:
