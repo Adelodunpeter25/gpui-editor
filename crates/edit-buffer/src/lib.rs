@@ -106,6 +106,13 @@ impl Buffer {
         &self.rope
     }
 
+    /// Owned text for a char-offset range, clamped to buffer bounds.
+    pub fn slice_text(&self, range: Range<usize>) -> String {
+        let start = range.start.min(self.len_chars());
+        let end = range.end.min(self.len_chars()).max(start);
+        self.rope.slice(start..end).to_string()
+    }
+
     /// Char offset -> Point.
     pub fn offset_to_point(&self, offset: usize) -> Point {
         let line = self.rope.char_to_line(offset.min(self.len_chars()));

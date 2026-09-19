@@ -44,3 +44,17 @@ fn search_caps_results() {
     assert_eq!(b.search("foo", false, 10).len(), 3);
     assert_eq!(b.search("foo", false, 1).len(), 1);
 }
+
+#[test]
+fn slice_text_returns_the_given_range() {
+    let b = Buffer::from_text("hello world");
+    assert_eq!(b.slice_text(0..5), "hello");
+    assert_eq!(b.slice_text(6..11), "world");
+}
+
+#[test]
+fn slice_text_clamps_out_of_bounds_ranges() {
+    let b = Buffer::from_text("hi");
+    assert_eq!(b.slice_text(0..100), "hi");
+    assert_eq!(b.slice_text(50..100), "");
+}

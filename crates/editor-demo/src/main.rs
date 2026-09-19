@@ -37,7 +37,7 @@ impl DemoApp {
             let registry = LanguageRegistry::builtin();
             EditorState::readonly(INITIAL_SAMPLE, registry.for_name("rust"))
         });
-        let view = cx.new(|_| EditorView::new(&state));
+        let view = cx.new(|cx| EditorView::new(&state, cx));
         let focus_handle = cx.focus_handle();
 
         Self {
@@ -188,6 +188,7 @@ fn main() {
             KeyBinding::new("ctrl-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
+        editor_ui::init(cx);
 
         cx.open_window(
             WindowOptions {
