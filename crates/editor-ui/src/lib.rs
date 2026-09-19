@@ -7,8 +7,14 @@
 
 use edit_buffer::{Buffer, Edit};
 use gpui::*;
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 use syntax::{Capture, HighlightSpan, HighlightedVersion, Language, ThemePreset};
+
+/// Fixed row height every editor line renders at. Virtualized scroll math in
+/// `EditorView::render` depends on this staying constant per `render_line`.
+const LINE_HEIGHT: Pixels = px(22.0);
 
 // ---------------------------------------------------------------------------
 // Model (pure, testable without a Window)
@@ -381,64 +387,87 @@ fn bracket_pair(c: char) -> Option<(char, char, bool)> {
 
 pub struct EditorView {
     state: Entity<EditorState>,
-    scroll_handle: ScrollHandle,
+    scroll_handle: UniformListScrollHandle,
+    /// Last measured pixel height of the editor viewport, captured by a
+    /// `canvas` each frame. Used to snap the visible list height to a whole
+    /// multiple of `LINE_HEIGHT` so scrolling never shows a half-clipped row.
+    viewport_height: Rc<Cell<Pixels>>,
 }
 
 impl EditorView {
     pub fn new(state: &Entity<EditorState>) -> Self {
         Self {
             state: state.clone(),
-            scroll_handle: ScrollHandle::new(),
+            scroll_handle: UniformListScrollHandle::new(),
+            viewport_height: Rc::new(Cell::new(px(0.))),
         }
     }
 }
 
+fn resolve_color(span: &StyledSpan) -> Hsla {
+    span.color
+        .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
+        .unwrap_or_else(|| color_for(span.capture))
+}
+
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        let line_count = state.line_count();
+        let line_count = self.state.read(cx).line_count() as usize;
 
-        // Capture per-line plain text + styled runs up front so render only
-        // reads owned data (no borrow across frames).
-        let lines: Vec<(String, Vec<(Range<usize>, Hsla)>)> = (0..line_count)
-            .map(|row| {
-                let text = state.line_text(row);
-                let runs = state
-                    .row_spans
-                    .get(row as usize)
-                    .map(|spans| {
-                        spans
-                            .iter()
-                            .map(|s| {
-                                let color = s
-                                    .color
-                                    .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
-                                    .unwrap_or_else(|| color_for(s.capture));
-                                (s.range.clone(), color)
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                (text, runs)
-            })
-            .collect();
+        let measured = self.viewport_height.get();
+        let rows_that_fit = (measured / LINE_HEIGHT).floor();
+        let list_height = if rows_that_fit > 0. {
+            LINE_HEIGHT * rows_that_fit
+        } else {
+            measured
+        };
+        let viewport_height = self.viewport_height.clone();
 
         div()
             .id("gpui-editor")
+            .relative()
             .size_full()
             .bg(Hsla::black())
             .text_color(Hsla::white())
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll_handle)
+            // Paint-less sibling purely to measure the container's pixel
+            // height each frame, so the list below can snap to whole lines.
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .text_sm()
-                    .py_2()
-                    .children(lines.into_iter().enumerate().map(|(ix, (text, runs))| {
-                        render_line(ix as u32, text, runs)
-                    })),
+                canvas(
+                    move |bounds, _window, _cx| viewport_height.set(bounds.size.height),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                uniform_list(
+                    "gpui-editor-lines",
+                    line_count,
+                    cx.processor(|this, range: Range<usize>, _window, cx| {
+                        let state = this.state.read(cx);
+                        range
+                            .map(|row| {
+                                let text = state.line_text(row as u32);
+                                let runs = state
+                                    .row_spans
+                                    .get(row)
+                                    .map(|spans| {
+                                        spans
+                                            .iter()
+                                            .map(|s| (s.range.clone(), resolve_color(s)))
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                                render_line(row as u32, text, runs)
+                            })
+                            .collect()
+                    }),
+                )
+                .track_scroll(&self.scroll_handle)
+                .text_sm()
+                .py_2()
+                .w_full()
+                .h(list_height),
             )
     }
 }
@@ -463,7 +492,7 @@ fn render_line(row: u32, text: String, runs: Vec<(Range<usize>, Hsla)>) -> impl 
         .flex_row()
         .items_center()
         .px_3()
-        .h(px(22.0))
+        .h(LINE_HEIGHT)
         .font_family("JetBrains Mono")
         .text_sm()
         .child(
