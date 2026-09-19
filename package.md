@@ -21,11 +21,24 @@ This isn't one monolithic package — pull in only what you need:
   widget, not just colored text — it carries real weight (scroll/selection
   machinery) that's wasted on something like a short static code snippet.
 
-They're ordinary path/git dependencies — add whichever ones you need to
-your `Cargo.toml`, independent of the others. The rest of this guide covers
-`editor-ui` specifically, since that's the one with GPUI-integration
-gotchas; `edit-buffer` and `syntax` are plain Rust crates with no special
-setup beyond `cargo add`.
+This repo isn't published to crates.io — pull in whichever crate(s) you need
+as a `git` dependency, pointing at the subdirectory:
+
+```toml
+# your host app's Cargo.toml — pick only what you need
+edit-buffer = { git = "https://github.com/Adelodunpeter25/gpui-editor.git" }
+syntax      = { git = "https://github.com/Adelodunpeter25/gpui-editor.git" }
+editor-ui   = { git = "https://github.com/Adelodunpeter25/gpui-editor.git" }
+```
+
+Cargo resolves each crate by name from the workspace root automatically —
+no `path =` needed even though they live under `crates/`. Add `rev = "..."`
+once you've picked a commit to pin to, same reasoning as pinning `gpui`
+below: floating on this repo's `main` means a future change here could
+shift under you without warning. The rest of this guide covers `editor-ui`
+specifically, since that's the one with GPUI-integration gotchas;
+`edit-buffer` and `syntax` are plain Rust crates with no special setup
+beyond adding the dependency.
 
 ## 1. Pin the same `gpui` revision — this is the part that actually breaks
 
