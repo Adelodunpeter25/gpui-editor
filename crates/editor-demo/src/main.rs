@@ -1,9 +1,8 @@
-use editor_ui::{EditorState, EditorView};
+mod types;
+
 use gpui::*;
 use std::borrow::Cow;
-use std::fs;
-use std::path::PathBuf;
-use syntax::LanguageRegistry;
+use types::DemoApp;
 
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
@@ -23,52 +22,6 @@ pub struct State {
     pub loaded: bool,
 }
 "#;
-
-struct DemoApp {
-    state: Entity<EditorState>,
-    view: Entity<EditorView>,
-    file_path: Option<PathBuf>,
-    focus_handle: FocusHandle,
-}
-
-impl DemoApp {
-    fn new(cx: &mut Context<Self>) -> Self {
-        let state = cx.new(|_| {
-            let registry = LanguageRegistry::builtin();
-            EditorState::readonly(INITIAL_SAMPLE, registry.for_name("rust"))
-        });
-        let view = cx.new(|cx| EditorView::new(&state, cx));
-        let focus_handle = cx.focus_handle();
-
-        Self {
-            state,
-            view,
-            file_path: None,
-            focus_handle,
-        }
-    }
-
-    fn open_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                let registry = LanguageRegistry::builtin();
-                let lang = LanguageRegistry::for_path(&path).or_else(|| {
-                    path.extension()
-                        .and_then(|ext| ext.to_str())
-                        .and_then(|ext| registry.for_extension(ext))
-                });
-
-                self.state.update(cx, |editor, _cx| {
-                    editor.set_text(&content);
-                    editor.set_language(lang);
-                });
-
-                self.file_path = Some(path);
-                cx.notify();
-            }
-        }
-    }
-}
 
 impl Render for DemoApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
