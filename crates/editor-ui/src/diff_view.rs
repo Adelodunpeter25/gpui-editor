@@ -19,7 +19,8 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 use syntax::{Language, ThemePreset};
 
@@ -28,11 +29,120 @@ use crate::{color_for, render_scrollbar, render_spans};
 
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 
+const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(112.0);
+const WRAP_WIDTH_BUCKET: f32 = 32.0;
+
+fn round_wrap_width(width: Pixels) -> Pixels {
+    px((f32::from(width) / WRAP_WIDTH_BUCKET).round() * WRAP_WIDTH_BUCKET)
+}
+
+struct DiffWrapCache {
+    wrap_width: Option<Pixels>,
+    diff_version: u64,
+    font: FontConfig,
+    row_breaks: Vec<Vec<usize>>,
+    visual_index: Vec<(u32, u32)>,
+}
+
+impl Default for DiffWrapCache {
+    fn default() -> Self {
+        Self {
+            wrap_width: None,
+            diff_version: u64::MAX,
+            font: FontConfig::default(),
+            row_breaks: Vec::new(),
+            visual_index: Vec::new(),
+        }
+    }
+}
+
+impl DiffWrapCache {
+    fn is_stale(&self, wrap_width: Option<Pixels>, diff_version: u64, font: &FontConfig) -> bool {
+        self.wrap_width != wrap_width || self.diff_version != diff_version || &self.font != font
+    }
+
+    fn rebuild(
+        lines: &[diff::DiffLine],
+        diff_version: u64,
+        wrap_width: Option<Pixels>,
+        font: &FontConfig,
+        window: &mut Window,
+    ) -> Self {
+        let rows = lines.len();
+        let mut row_breaks: Vec<Vec<usize>> = Vec::with_capacity(rows);
+        let mut visual_index: Vec<(u32, u32)> = Vec::new();
+
+        match wrap_width {
+            None => {
+                for row in 0..rows {
+                    row_breaks.push(Vec::new());
+                    visual_index.push((row as u32, 0));
+                }
+            }
+            Some(width) => {
+                let mut wrapper = window
+                    .text_system()
+                    .line_wrapper(gpui::font(font.family.clone()), font.size);
+                for (row, line) in lines.iter().enumerate() {
+                    let text = &line.text;
+                    if text.is_empty() {
+                        row_breaks.push(Vec::new());
+                        visual_index.push((row as u32, 0));
+                        continue;
+                    }
+                    let fragments = [LineFragment::text(text)];
+                    let breaks: Vec<usize> = wrapper
+                        .wrap_line(&fragments, width)
+                        .map(|boundary| {
+                            let ix = boundary.ix.min(text.len());
+                            text[..ix].chars().count()
+                        })
+                        .collect();
+                    let sub_count = breaks.len() as u32 + 1;
+                    for sub in 0..sub_count {
+                        visual_index.push((row as u32, sub));
+                    }
+                    row_breaks.push(breaks);
+                }
+            }
+        }
+
+        Self {
+            wrap_width,
+            diff_version,
+            font: font.clone(),
+            row_breaks,
+            visual_index,
+        }
+    }
+
+    fn visual_row_count(&self) -> usize {
+        self.visual_index.len()
+    }
+
+    fn resolve(&self, visual_ix: usize) -> (u32, u32) {
+        self.visual_index[visual_ix]
+    }
+
+    fn sub_range(&self, row: u32, sub: u32, row_len: usize) -> Range<usize> {
+        let breaks = &self.row_breaks[row as usize];
+        let start = if sub == 0 {
+            0
+        } else {
+            breaks[(sub - 1) as usize]
+        };
+        let end = breaks.get(sub as usize).copied().unwrap_or(row_len);
+        start..end
+    }
+}
+
 pub struct DiffState {
     pub(crate) result: diff::DiffResult,
     language: Option<&'static Language>,
     theme: ThemePreset,
     font: FontConfig,
+    wrap_enabled: bool,
+    version: u64,
 }
 
 impl DiffState {
@@ -46,6 +156,8 @@ impl DiffState {
             language,
             theme: ThemePreset::GitHubDark,
             font: FontConfig::default(),
+            wrap_enabled: true,
+            version: 0,
         }
     }
 
@@ -59,12 +171,19 @@ impl DiffState {
         self
     }
 
+    pub fn with_wrap(mut self, enabled: bool) -> Self {
+        self.wrap_enabled = enabled;
+        self
+    }
+
     pub fn set_texts(&mut self, old: &str, new: &str) {
         self.result = diff::diff_lines(old, new);
+        self.version = self.version.wrapping_add(1);
     }
 
     pub fn set_result(&mut self, result: diff::DiffResult) {
         self.result = result;
+        self.version = self.version.wrapping_add(1);
     }
 
     pub fn set_language(&mut self, language: Option<&'static Language>) {
@@ -79,6 +198,11 @@ impl DiffState {
         self.font = font;
     }
 
+    pub fn set_wrap_enabled(&mut self, enabled: bool) {
+        self.wrap_enabled = enabled;
+        self.version = self.version.wrapping_add(1);
+    }
+
     pub fn language(&self) -> Option<&'static Language> {
         self.language
     }
@@ -89,6 +213,14 @@ impl DiffState {
 
     pub fn font(&self) -> &FontConfig {
         &self.font
+    }
+
+    pub fn wrap_enabled(&self) -> bool {
+        self.wrap_enabled
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn line_count(&self) -> usize {
@@ -112,7 +244,9 @@ pub struct DiffView {
     state: Entity<DiffState>,
     scroll_handle: UniformListScrollHandle,
     viewport_height: Rc<Cell<Pixels>>,
+    viewport_width: Rc<Cell<Pixels>>,
     thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    wrap_cache: Rc<RefCell<DiffWrapCache>>,
 }
 
 impl DiffView {
@@ -121,7 +255,9 @@ impl DiffView {
             state: state.clone(),
             scroll_handle: UniformListScrollHandle::new(),
             viewport_height: Rc::new(Cell::new(px(0.))),
+            viewport_width: Rc::new(Cell::new(px(0.))),
             thumb_dragging: Rc::new(Cell::new(None)),
+            wrap_cache: Rc::new(RefCell::new(DiffWrapCache::default())),
         }
     }
 }
@@ -134,6 +270,8 @@ fn gutter_number(n: Option<u32>) -> String {
 
 fn render_diff_line(
     line: &diff::DiffLine,
+    sub: u32,
+    sub_range: Range<usize>,
     language: Option<&'static Language>,
     theme: ThemePreset,
     font: &FontConfig,
@@ -144,16 +282,27 @@ fn render_diff_line(
         diff::DiffLineKind::Context => (" ", None, rgb(0x585b70)),
     };
 
+    let full_chars: Vec<char> = line.text.chars().collect();
+    let row_len = full_chars.len();
+    let sub_start = sub_range.start.min(row_len);
+    let sub_end = sub_range.end.min(row_len);
+    let sub_text: String = if sub_start < sub_end {
+        full_chars[sub_start..sub_end].iter().collect()
+    } else {
+        String::new()
+    };
+
     let highlighted = syntax::highlight_themed(&line.text, language, 0, Some(theme));
     let runs: Vec<(std::ops::Range<usize>, Hsla)> = highlighted
         .spans
         .iter()
-        .map(|s| {
+        .filter_map(|s| {
+            let clipped = crate::wrap::clip_to_subrange(&(s.start..s.end), &sub_range)?;
             let color = s
                 .color
                 .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
                 .unwrap_or_else(|| color_for(s.capture));
-            (s.start..s.end, color)
+            Some((clipped, color))
         })
         .collect();
 
@@ -169,26 +318,38 @@ fn render_diff_line(
         row = row.bg(bg);
     }
 
+    let old_label = if sub == 0 {
+        gutter_number(line.old_line)
+    } else {
+        " ".repeat(4)
+    };
+    let new_label = if sub == 0 {
+        gutter_number(line.new_line)
+    } else {
+        " ".repeat(4)
+    };
+    let marker_label = if sub == 0 { marker } else { " " };
+
     row.child(
         div()
             .w_10()
             .flex_shrink_0()
             .text_color(rgb(0x585b70))
-            .child(gutter_number(line.old_line)),
+            .child(old_label),
     )
     .child(
         div()
             .w_10()
             .flex_shrink_0()
             .text_color(rgb(0x585b70))
-            .child(gutter_number(line.new_line)),
+            .child(new_label),
     )
     .child(
         div()
             .w_4()
             .flex_shrink_0()
             .text_color(marker_color)
-            .child(marker),
+            .child(marker_label),
     )
     .child(
         div()
@@ -196,23 +357,50 @@ fn render_diff_line(
             .flex_row()
             .flex_1()
             .overflow_x_hidden()
-            .child(render_spans(line.text.clone(), runs, None)),
+            .child(render_spans(sub_text, runs, None)),
     )
 }
 
 impl Render for DiffView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line_count = self.state.read(cx).line_count();
-        let font = self.state.read(cx).font().clone();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let state_snapshot = self.state.read(cx);
+        let diff_version = state_snapshot.version();
+        let wrap_enabled = state_snapshot.wrap_enabled();
+        let font = state_snapshot.font().clone();
 
-        let measured = self.viewport_height.get();
-        let rows_that_fit = (measured / font.line_height).floor();
+        let measured_height = self.viewport_height.get();
+        let measured_width = self.viewport_width.get();
+        let rows_that_fit = (measured_height / font.line_height).floor();
         let list_height = if rows_that_fit > 0. {
             font.line_height * rows_that_fit
         } else {
-            measured
+            measured_height
         };
+
+        let wrap_width = if wrap_enabled && measured_width > DIFF_WRAP_GUTTER_RESERVE {
+            Some(round_wrap_width(measured_width - DIFF_WRAP_GUTTER_RESERVE))
+        } else if wrap_enabled {
+            Some(px(400.))
+        } else {
+            None
+        };
+
+        let mut wrap_cache = self.wrap_cache.borrow_mut();
+        if wrap_cache.is_stale(wrap_width, diff_version, &font) {
+            *wrap_cache = DiffWrapCache::rebuild(
+                &state_snapshot.result.lines,
+                diff_version,
+                wrap_width,
+                &font,
+                window,
+            );
+        }
+        let visual_rows = wrap_cache.visual_row_count();
+        drop(wrap_cache);
+
         let viewport_height = self.viewport_height.clone();
+        let viewport_width = self.viewport_width.clone();
+        let wrap_cache_handle = self.wrap_cache.clone();
 
         div()
             .id("gpui-diff-view")
@@ -222,7 +410,10 @@ impl Render for DiffView {
             .text_color(Hsla::white())
             .child(
                 canvas(
-                    move |bounds, _window, _cx| viewport_height.set(bounds.size.height),
+                    move |bounds, _window, _cx| {
+                        viewport_height.set(bounds.size.height);
+                        viewport_width.set(bounds.size.width);
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()
@@ -231,15 +422,19 @@ impl Render for DiffView {
             .child(
                 uniform_list(
                     "gpui-diff-lines",
-                    line_count,
+                    visual_rows,
                     cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let language = state.language();
                         let theme = state.theme();
                         let font = state.font();
+                        let cache = wrap_cache_handle.borrow();
                         range
                             .map(|ix| {
-                                render_diff_line(&state.result.lines[ix], language, theme, font)
+                                let (row, sub) = cache.resolve(ix);
+                                let line = &state.result.lines[row as usize];
+                                let sub_range = cache.sub_range(row, sub, line.text.chars().count());
+                                render_diff_line(line, sub, sub_range, language, theme, font)
                             })
                             .collect()
                     }),
