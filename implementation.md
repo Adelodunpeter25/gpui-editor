@@ -30,10 +30,11 @@ Performance budgets (measure on M-series, release):
 **Status:** scroll/frame-build budget met via `uniform_list` virtualization
 (only visible rows are built/painted). Open-time and incremental-highlight
 budgets are **not yet measured** — no criterion benches exist (§9). Syntax
-highlight today is synchronous on the caller's thread (`EditorState::rehighlight`),
-not off-thread/debounced — acceptable at readonly-demo scale (confirmed
-smooth scrolling an 8k-line file), a real risk once edit mode makes it fire
-per keystroke. See the "known gaps" note at the end of §7.
+highlight runs synchronously on the caller's thread below ~64KB of text, and
+on a `cx.background_spawn` task above it, with version-checked cancellation
+if a newer edit/open lands before the parse finishes (see §6) — still not
+debounced/incremental, a real risk once edit mode makes `insert()` fire
+per keystroke on a large file. See the "known gaps" note at the end of §7.
 
 ## 1. Architecture — 4 crates
 
@@ -102,7 +103,7 @@ Responsibility: bytes -> `HighlightSpan`, using `lumis` (tree-sitter under the h
   pub struct HighlightSpan { pub start: usize, pub end: usize, pub capture: Capture, pub color: Option<(u8,u8,u8)> }
   pub struct HighlightedVersion { pub buffer_version: u64, pub spans: Vec<HighlightSpan> }
   ```
-- **Not implemented:** off-thread/background parsing, incremental re-parse (keeping a `Tree` across edits), debouncing, packed `Vec<u32>` span storage, LRU eviction of far-offscreen spans. Every `highlight_themed` call re-parses and re-highlights the *entire* text from scratch — acceptable today because it only runs on `set_text`/`set_language`/`set_theme`, never per-frame or per-keystroke (there's no edit-mode keystroke loop exercising it yet).
+- Off-thread parsing: **implemented for the one-shot case** — `EditorState::rehighlight_from` (`editor-ui`, not this crate) runs `highlight_themed` synchronously below ~64KB of text, on a `cx.background_spawn` task above it. **Not implemented:** incremental re-parse (keeping a `Tree` across edits), debouncing, packed `Vec<u32>` span storage, LRU eviction of far-offscreen spans. Every `highlight_themed` call still re-parses and re-highlights the *entire* text from scratch — the background thread just keeps that off the UI thread for large files; it doesn't make it incremental. Acceptable today because it only runs on `set_text`/`set_language`/`set_theme`/`insert`, never per-frame (there's no edit-mode keystroke loop exercising it per-character yet).
 
 ## 4. Crate 3: `editor-ui` (GPUI)
 
@@ -163,28 +164,50 @@ Out: multi-cursor, folding, minimap, per-line wrap toggle, diff viewer (see `dif
 
 ## 6. Threading / Data Flow
 
-**Current (synchronous) flow — not the originally-planned background-parse flow:**
+**Current flow — hybrid sync/async, implemented this session:**
 
 ```
-EditorState::set_text/set_language/set_theme
-  -> buffer.edit() bumps version (set_text only)
-  -> rehighlight(): full buffer.text().to_string() + syntax::highlight_themed() synchronously
-  -> rebuild_row_spans(): O(all rows), not just dirty ones
-  -> caller's cx.notify() repaints
+EditorState::set_text/set_language/set_theme/insert (now take `cx: &mut Context<Self>`)
+  -> buffer.edit() bumps version (set_text/insert only)
+  -> rehighlight_from(text, cx):
+       if text.len() <= SYNC_HIGHLIGHT_THRESHOLD (64KB):
+         apply_highlight(text): syntax::highlight_themed() synchronously -> rebuild_row_spans()
+       else:
+         cx.background_spawn(async { highlight_themed(...) })   // off the UI thread
+         cx.spawn(async move |this, cx| {
+           let highlight = task.await;
+           this.update(cx, |state, cx| {
+             if state.buffer.version() != highlight.buffer_version { return } // stale, discard
+             state.rebuild_row_spans(&highlight.spans);
+             cx.notify();
+           })
+         }).detach()
+  -> caller's cx.notify() repaints immediately either way (buffer/selection update
+     synchronously; only the *coloring* is delayed above the threshold)
 ```
 
-The originally-planned flow below is **not implemented**. It only becomes
-necessary once edit mode exists and highlighting must run per keystroke
-without janking typing — see the "known gaps" note at the end of §7 before
-building this out speculatively:
+This is a **one-shot** background parse (file open / language / theme
+change), not the incremental per-keystroke reparse the original plan
+sketched below — that still isn't implemented, and per the "known gaps"
+note at the end of §7, isn't worth building until edit mode gives it real
+traffic to design against:
 
 ```
 key/mouse -> EditorView -> EditorState::apply_edit()
   -> buffer.edit() bumps version, drops CachedLine for dirty rows
   -> cx.notify() for immediate repaint with stale highlight (fast)
-  -> background_spawn parse(version): tree-sitter -> HighlightedVersion
+  -> background_spawn parse(version): tree-sitter -> HighlightedVersion (incremental, keeps a Tree)
   -> cx.update(|cx| state.highlight = v; evict + notify) if version still current
 ```
+
+**Breaking API change from this work:** `EditorState::set_text`,
+`set_language`, `set_theme`, and `insert` all gained a `cx: &mut
+Context<Self>` parameter (needed to call `cx.background_spawn`). Any host
+app's `state.update(cx, |editor, _cx| { editor.set_text(...); })` closure
+needs `_cx` renamed to `cx` and threaded into the call — see `package.md`
+§5. `editor-demo` and this repo's own tests were updated; **external
+consumers on an unpinned git dependency (e.g. `console`) need the same
+one-line-per-call-site fix** next time they pull.
 
 Render-time flow (implemented, this session):
 ```
@@ -210,20 +233,23 @@ Never blocks on parsing today because nothing re-parses per frame — the risk i
 
 **Known gaps to fix before M2 (edit mode) lands**, flagged during a review
 of this session's work (not yet actioned — listed here so they aren't lost):
-- `rehighlight()` is synchronous full-buffer re-parse on every edit; fine
-  today because nothing calls `insert()` in a loop, but will jank typing
-  once edit mode exists.
+- `rehighlight`/`rehighlight_from` re-parse the *entire* buffer every call,
+  even the now-backgrounded large-file path — moving it off-thread avoids
+  blocking repaint, but it's still O(whole file), not incremental. Once
+  edit mode calls `insert()` per keystroke, even a background full-file
+  reparse on every character will fall behind on a large file.
 - `rebuild_row_spans()` rebuilds every row's spans, not just rows touched by
   an edit.
 - `render_spans()` rebuilds a fresh element list per visible row every
   frame — cheap today only because rows are short and few are visible.
 
-Minimal recommended next step when edit mode starts: debounce
-`rehighlight` + make `rebuild_row_spans` dirty-row-only, *before* reaching
-for full background-thread parsing + a `ShapedLine` cache (that's real
-threading/eviction work that only pays off at the 1MB/10k-line/60fps
-budget in §0, and is easier to get right against real edit traffic than to
-guess at now).
+Minimal recommended next step when edit mode starts: make `rebuild_row_spans`
+dirty-row-only and add real debouncing (coalesce rapid keystrokes into one
+parse) on top of the background-spawn plumbing that now exists, *before*
+reaching for incremental tree-sitter reparse (keeping a `Tree` across
+edits) + a `ShapedLine` cache (that's real threading/eviction work that
+only pays off at the 1MB/10k-line/60fps budget in §0, and is easier to get
+right against real edit traffic than to guess at now).
 
 Each milestone should end with `cargo test --workspace` (per AGENTS.md) + a
 manual scroll/selection/resize check, matching how every feature this
@@ -247,16 +273,16 @@ let view = cx.new(|cx| EditorView::new(&state, cx));
 // in render: div().child(view.clone())
 ```
 
-Builders only, no `pub` fields. Setters: `with_mode()`, `with_indent()`, `with_wrap()`/`set_wrap_enabled()`, `set_language()`, `set_theme()`.
+Builders only, no `pub` fields. Setters: `with_mode()`, `with_indent()`, `with_wrap()`/`set_wrap_enabled()`, `with_font()`/`set_font()`. `set_text()`, `set_language()`, `set_theme()`, and `insert()` additionally take a `cx: &mut Context<EditorState>` (used to background-spawn highlighting on large files — see §6).
 
 ## 9. Testing
 
-- Unit (`edit-buffer`, `syntax`, `editor-ui`): 24 tests across the workspace today (`cargo test --workspace`) — buffer edit/undo/search/slice, highlight capture kinds + language registry resolution, `EditorState` selection/row-offset/point-conversion/wrap-flag/mode behavior.
-- **Not implemented:** UI integration tests (`#[gpui::test]`) for click-to-select, copy, wrap toggle, scrollbar drag — these were verified manually per feature instead. `criterion` perf benches for `buffer.edit`/`highlight` on a 1MB file don't exist; the perf budgets in §0 are unverified beyond informal manual checks (smooth scroll on an 8k-line file).
+- Unit (`edit-buffer`, `syntax`, `editor-ui`): 34 tests across the workspace today (`cargo test --workspace`) — buffer edit/undo/search/slice, highlight capture kinds + language registry resolution, diff-line computation, `EditorState` selection/row-offset/point-conversion/wrap-flag/mode/font behavior, plus (new) background-highlight behavior on large `set_text` calls and stale-result discard on rapid successive large edits.
+- `editor-ui` now has its first `#[gpui::test]`/`TestAppContext` usage (`crates/editor-ui/Cargo.toml` dev-dependency: `gpui` with `features = ["test-support"]`) — needed once `insert()`/`set_text()` etc. required a real `Context<EditorState>` to call. Still **not implemented**: UI integration tests for click-to-select, copy, wrap toggle, scrollbar drag — these were verified manually per feature instead. `criterion` perf benches for `buffer.edit`/`highlight` on a 1MB file don't exist; the perf budgets in §0 are unverified beyond informal manual checks (smooth scroll on an 8k-line file).
 
 ## 10. Risks
 
 - Shaped text cost — mitigated via `uniform_list` virtualization (only visible rows shaped/painted) rather than the originally-planned custom line-cache `Element`.
-- Synchronous full-buffer re-highlight — not yet a problem (readonly, no edit loop), but the top risk once edit mode lands. See §7's "known gaps."
+- Full-buffer re-highlight is non-incremental even now that it's backgrounded above ~64KB — not yet a problem (readonly, no edit loop), but the top risk once edit mode lands. See §7's "known gaps."
 - tree-sitter query maintenance — delegated to `lumis`, which owns its own grammar/query versions; this repo doesn't maintain `.scm` files directly (diverges from the original plan's `languages/*.scm` layout, which was never built).
 - GPUI API drift — real risk realized once already: `gpui`/`gpui_platform` are pinned to an exact git rev (`5631830c...`) in `Cargo.toml` after floating on zed's `main` briefly broke text rendering entirely. Any host app embedding `editor-ui` must pin the identical rev (see `package.md`).

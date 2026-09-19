@@ -9,3 +9,6 @@ edit-buffer = { workspace = true }
 syntax = { workspace = true }
 diff = { workspace = true }
 ropey = { workspace = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

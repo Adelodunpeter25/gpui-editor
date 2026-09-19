@@ -140,21 +140,28 @@ no cursor/input handling wired up in `EditorView` yet (see
 ## 5. Update the editor from outside (e.g. your own "open file" flow)
 
 ```rust
-state.update(cx, |editor, _cx| {
-    editor.set_text(&new_content);
-    editor.set_language(registry.for_extension("py"));
+state.update(cx, |editor, cx| {
+    editor.set_text(&new_content, cx);
+    editor.set_language(registry.for_extension("py"), cx);
 });
 ```
 
 Any mutation via `Entity::update` triggers a window redraw on the next
 frame — you don't need to manually notify `EditorView`.
 
+`set_text`/`set_language`/`set_theme`/`insert` all take the `cx` from your
+`update` closure (previously unused, often named `_cx`) — they use it to
+run syntax highlighting on a background thread for files over ~64KB, so a
+large file doesn't stall the window while it parses (see
+`implementation.md` §6). If your code still has `|editor, _cx|`, rename it
+to `|editor, cx|` and pass `cx` through.
+
 ## 6. Optional: theme and word wrap
 
 ```rust
-state.update(cx, |editor, _cx| {
-    editor.set_theme(syntax::ThemePreset::Dracula); // default is GitHubDark
-    editor.set_wrap_enabled(true);                  // default is off (clip long lines)
+state.update(cx, |editor, cx| {
+    editor.set_theme(syntax::ThemePreset::Dracula, cx); // default is GitHubDark
+    editor.set_wrap_enabled(true);   // default is off (clip long lines) — no cx needed
 });
 ```
 

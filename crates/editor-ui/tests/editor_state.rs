@@ -1,12 +1,50 @@
 use edit_buffer::Point;
 use editor_ui::{EditorState, FontConfig, Mode};
-use gpui::px;
+use gpui::{px, AppContext as _, TestAppContext};
 
-#[test]
-fn readonly_ignores_insert() {
-    let mut s = EditorState::readonly("hello", Some(&syntax::RUST));
-    s.insert(0, "X");
-    assert_eq!(s.line_text(0), "hello");
+// `insert` takes a `Context<EditorState>` (to spawn a background rehighlight
+// on large files) — the first test in this crate needing a real GPUI
+// executor rather than plain struct construction.
+#[gpui::test]
+fn readonly_ignores_insert(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::readonly("hello", Some(&syntax::RUST))));
+    state.update(cx, |s, cx| s.insert(0, "X", cx));
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "hello"));
+}
+
+/// Above `SYNC_HIGHLIGHT_THRESHOLD`, `set_text` defers highlighting to a
+/// background task (see `EditorState::rehighlight_from`) — but the buffer
+/// content itself must update synchronously regardless, before that task
+/// ever runs.
+#[gpui::test]
+fn large_set_text_updates_buffer_before_background_highlight_runs(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::readonly("small", Some(&syntax::RUST))));
+    let big = "let x = 1;\n".repeat(6_500); // ~71.5KB, just over the sync threshold
+    state.update(cx, |s, cx| s.set_text(&big, cx));
+
+    // Content is already there even though the background parse hasn't
+    // been polled yet.
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "let x = 1;"));
+
+    cx.run_until_parked();
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "let x = 1;"));
+}
+
+/// A second large `set_text` before the first's background highlight has
+/// landed must not corrupt anything — the stale result (still in flight for
+/// the old version) has to be discarded, not applied on top of the newer
+/// buffer content.
+#[gpui::test]
+fn rapid_large_set_text_calls_leave_buffer_matching_the_latest_text(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::readonly("small", Some(&syntax::RUST))));
+    let big_a = "a\n".repeat(33_000); // ~66KB, just over the sync threshold
+    let big_b = "b\n".repeat(33_000);
+
+    state.update(cx, |s, cx| s.set_text(&big_a, cx));
+    state.update(cx, |s, cx| s.set_text(&big_b, cx));
+    cx.run_until_parked();
+
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "b"));
 }
 
 #[test]

@@ -96,9 +96,9 @@ impl DemoApp {
                         .and_then(|ext| registry.for_extension(ext))
                 });
 
-                self.state.update(cx, |editor, _cx| {
-                    editor.set_text(&content);
-                    editor.set_language(lang);
+                self.state.update(cx, |editor, cx| {
+                    editor.set_text(&content, cx);
+                    editor.set_language(lang, cx);
                 });
 
                 self.file_path = Some(path);

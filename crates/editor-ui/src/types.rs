@@ -105,6 +105,10 @@ impl Default for FontConfig {
     }
 }
 
+/// Below this size, rehighlight runs synchronously inline rather than via
+/// `cx.background_spawn` — see `EditorState::rehighlight_from`.
+const SYNC_HIGHLIGHT_THRESHOLD: usize = 64_000;
+
 pub struct EditorState {
     buffer: Buffer,
     language: Option<&'static Language>,
@@ -160,7 +164,12 @@ impl EditorState {
             font: FontConfig::default(),
             row_spans: Vec::new(),
         };
-        this.rehighlight_from(&text);
+        // Construction has no `Context<Self>` yet (these constructors are
+        // plain functions, not `cx.new(|cx| ...)` closures themselves) — a
+        // synchronous first highlight is the only option here regardless of
+        // file size; later mutation via `set_text`/etc. is what gets the
+        // background-parse treatment.
+        this.apply_highlight(&text);
         this
     }
 
@@ -246,14 +255,14 @@ impl EditorState {
         self.font = font;
     }
 
-    pub fn set_language(&mut self, language: Option<&'static Language>) {
+    pub fn set_language(&mut self, language: Option<&'static Language>, cx: &mut Context<Self>) {
         self.language = language;
-        self.rehighlight();
+        self.rehighlight(cx);
     }
 
-    pub fn set_theme(&mut self, theme: ThemePreset) {
+    pub fn set_theme(&mut self, theme: ThemePreset, cx: &mut Context<Self>) {
         self.theme = theme;
-        self.rehighlight();
+        self.rehighlight(cx);
     }
 
     /// Replace whole text (e.g. file open). Resets selection/search.
@@ -262,19 +271,19 @@ impl EditorState {
     /// than round-tripping through `self.buffer.text().to_string()` — for
     /// the file-open path this avoids a full extra copy of the file on top
     /// of the ones already needed to read it and build the rope.
-    pub fn set_text(&mut self, text: &str) {
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let len = self.buffer.len_chars();
         self.buffer.edit(&[Edit {
             range: 0..len,
             text: text.to_string(),
         }]);
         self.selection = Selection::default();
-        self.rehighlight_from(text);
+        self.rehighlight_from(text, cx);
         self.rerun_search();
     }
 
     /// M2 path: insert at char offset. No-op in readonly.
-    pub fn insert(&mut self, offset: usize, text: &str) {
+    pub fn insert(&mut self, offset: usize, text: &str, cx: &mut Context<Self>) {
         if self.is_readonly() {
             return;
         }
@@ -282,7 +291,7 @@ impl EditorState {
             range: offset..offset,
             text: text.to_string(),
         }]);
-        self.rehighlight();
+        self.rehighlight(cx);
         self.rerun_search();
     }
 
@@ -357,19 +366,56 @@ impl EditorState {
     /// clone). Used by callers that don't already hold the text as a
     /// `&str` (`set_language`/`set_theme`/`insert`). `set_text` skips this
     /// and calls `rehighlight_from` directly with its own parameter.
-    fn rehighlight(&mut self) {
+    fn rehighlight(&mut self, cx: &mut Context<Self>) {
         let text = self.buffer.text().to_string();
-        self.rehighlight_from(&text);
+        self.rehighlight_from(&text, cx);
     }
 
     /// Highlight `text` (must match the buffer's current content) and
-    /// rebuild `row_spans` from it. The flat `Vec<HighlightSpan>` this
-    /// produces is used only to populate `row_spans` and isn't retained —
-    /// there's no reader for it once `row_spans` exists.
-    fn rehighlight_from(&mut self, text: &str) {
+    /// rebuild `row_spans` from it — synchronously below
+    /// `SYNC_HIGHLIGHT_THRESHOLD`, off the main thread above it (see
+    /// `rehighlight_from`).
+    fn apply_highlight(&mut self, text: &str) {
         let version = self.buffer.version();
         let highlight = syntax::highlight_themed(text, self.language, version, Some(self.theme));
         self.rebuild_row_spans(&highlight.spans);
+    }
+
+    /// Highlight `text` (must match the buffer's current content). Small
+    /// files highlight synchronously inline — a `cx.background_spawn`
+    /// round-trip (task scheduling + a second `cx.update` dispatch) costs
+    /// more than it saves when `highlight_themed` already finishes in far
+    /// under a millisecond. Above `SYNC_HIGHLIGHT_THRESHOLD`, the parse
+    /// moves to a background thread so it can't block repaint, and the
+    /// result is discarded on arrival if a newer edit/open already changed
+    /// the buffer's version by then (an old file's highlight can't flash
+    /// onto whatever's open now).
+    fn rehighlight_from(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.len() <= SYNC_HIGHLIGHT_THRESHOLD {
+            self.apply_highlight(text);
+            return;
+        }
+
+        let version = self.buffer.version();
+        let owned_text = text.to_string();
+        let language = self.language;
+        let theme = self.theme;
+        let task = cx.background_spawn(async move {
+            syntax::highlight_themed(&owned_text, language, version, Some(theme))
+        });
+        cx.spawn(async move |this, cx| {
+            let highlight = task.await;
+            let _ = this.update(cx, |state, cx| {
+                if state.buffer.version() != highlight.buffer_version {
+                    // A newer edit/open landed before this parse finished;
+                    // it no longer describes the buffer's current content.
+                    return;
+                }
+                state.rebuild_row_spans(&highlight.spans);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Split flat char-offset spans into per-row spans for O(visible) render.
