@@ -20,6 +20,7 @@ use syntax::Capture;
 use types::{RowInteraction, StyledSpan};
 use wrap::{clip_to_subrange, WrapCache};
 
+pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use diff_view::{DiffState, DiffView};
 pub use types::{EditorState, EditorView, FontConfig, IndentOptions, Mode, SearchState, Selection};
 
