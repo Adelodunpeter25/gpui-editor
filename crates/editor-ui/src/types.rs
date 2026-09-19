@@ -8,7 +8,7 @@ use gpui::*;
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
-use syntax::{Capture, HighlightSpan, HighlightedVersion, Language, ThemePreset};
+use syntax::{Capture, HighlightSpan, Language, ThemePreset};
 
 use crate::wrap::WrapCache;
 use crate::{Copy, SelectAll};
@@ -109,7 +109,6 @@ pub struct EditorState {
     buffer: Buffer,
     language: Option<&'static Language>,
     theme: ThemePreset,
-    highlight: HighlightedVersion,
     mode: Mode,
     selection: Selection,
     search: SearchState,
@@ -148,14 +147,11 @@ impl EditorState {
 
     fn from_buffer(buffer: Buffer, language: Option<&'static Language>, mode: Mode) -> Self {
         let theme = ThemePreset::GitHubDark;
-        let version = buffer.version();
         let text = buffer.text().to_string();
-        let highlight = syntax::highlight_themed(&text, language, version, Some(theme));
         let mut this = Self {
             buffer,
             language,
             theme,
-            highlight,
             mode,
             selection: Selection::default(),
             search: SearchState::default(),
@@ -164,7 +160,7 @@ impl EditorState {
             font: FontConfig::default(),
             row_spans: Vec::new(),
         };
-        this.rebuild_row_spans();
+        this.rehighlight_from(&text);
         this
     }
 
@@ -261,6 +257,11 @@ impl EditorState {
     }
 
     /// Replace whole text (e.g. file open). Resets selection/search.
+    ///
+    /// Rehighlights directly from `text` (the caller's own `&str`) rather
+    /// than round-tripping through `self.buffer.text().to_string()` — for
+    /// the file-open path this avoids a full extra copy of the file on top
+    /// of the ones already needed to read it and build the rope.
     pub fn set_text(&mut self, text: &str) {
         let len = self.buffer.len_chars();
         self.buffer.edit(&[Edit {
@@ -268,7 +269,7 @@ impl EditorState {
             text: text.to_string(),
         }]);
         self.selection = Selection::default();
-        self.rehighlight();
+        self.rehighlight_from(text);
         self.rerun_search();
     }
 
@@ -352,15 +353,27 @@ impl EditorState {
 
     // -- highlight -----------------------------------------------------------
 
+    /// Rehighlight from the buffer's current text (an extra full-buffer
+    /// clone). Used by callers that don't already hold the text as a
+    /// `&str` (`set_language`/`set_theme`/`insert`). `set_text` skips this
+    /// and calls `rehighlight_from` directly with its own parameter.
     fn rehighlight(&mut self) {
-        let version = self.buffer.version();
         let text = self.buffer.text().to_string();
-        self.highlight = syntax::highlight_themed(&text, self.language, version, Some(self.theme));
-        self.rebuild_row_spans();
+        self.rehighlight_from(&text);
+    }
+
+    /// Highlight `text` (must match the buffer's current content) and
+    /// rebuild `row_spans` from it. The flat `Vec<HighlightSpan>` this
+    /// produces is used only to populate `row_spans` and isn't retained —
+    /// there's no reader for it once `row_spans` exists.
+    fn rehighlight_from(&mut self, text: &str) {
+        let version = self.buffer.version();
+        let highlight = syntax::highlight_themed(text, self.language, version, Some(self.theme));
+        self.rebuild_row_spans(&highlight.spans);
     }
 
     /// Split flat char-offset spans into per-row spans for O(visible) render.
-    fn rebuild_row_spans(&mut self) {
+    fn rebuild_row_spans(&mut self, spans: &[HighlightSpan]) {
         let rows = self.buffer.line_count() as usize;
         self.row_spans.clear();
         self.row_spans.resize_with(rows, Vec::new);
@@ -373,7 +386,7 @@ impl EditorState {
         }
         row_starts.push(acc);
 
-        for span in &self.highlight.spans {
+        for span in spans {
             let s: &HighlightSpan = span;
             if s.start >= s.end {
                 continue;

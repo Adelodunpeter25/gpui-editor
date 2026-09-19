@@ -100,6 +100,14 @@ fn round_wrap_width(width: Pixels) -> Pixels {
     px((f32::from(width) / WRAP_WIDTH_BUCKET).round() * WRAP_WIDTH_BUCKET)
 }
 
+/// Row left padding (`px_3()` = 0.75rem) + gutter width (`w_12()` = 3rem) =
+/// where a row's text content actually starts, in rems. Fixed, non-dynamic
+/// layout — computed once per render from `window.rem_size()` rather than
+/// measured via a `canvas` per row (previously: one measurement canvas per
+/// *visible row*, remeasuring an identical value ~30 times a render for no
+/// reason, since every row has the same gutter/padding).
+const CONTENT_X_REM: f32 = 3.75;
+
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_snapshot_version = self.state.read(cx).version();
@@ -137,6 +145,8 @@ impl Render for EditorView {
             *self.wrap_cache.borrow_mut() = rebuilt;
         }
         let visual_row_count = self.wrap_cache.borrow().visual_row_count();
+
+        let content_x = window.rem_size() * CONTENT_X_REM;
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -218,7 +228,15 @@ impl Render for EditorView {
                                     show_line_number: sub == 0,
                                     col_offset: sub_range.start as u32,
                                 };
-                                render_line(meta, text, runs, row_selection, row_font.clone(), interaction.clone())
+                                render_line(
+                                    meta,
+                                    text,
+                                    runs,
+                                    row_selection,
+                                    row_font.clone(),
+                                    content_x,
+                                    interaction.clone(),
+                                )
                             })
                             .collect()
                     }),
@@ -361,6 +379,7 @@ fn render_line(
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
     font: FontConfig,
+    content_x: Pixels,
     interaction: RowInteraction,
 ) -> impl IntoElement {
     let RowMeta {
@@ -376,14 +395,9 @@ fn render_line(
     let row_len = text.chars().count();
     let line_height = font.line_height;
 
-    let content_x = Rc::new(Cell::new(px(0.)));
-    let measure_x = content_x.clone();
-
     let down = interaction.clone();
-    let down_content_x = content_x.clone();
     let down_font = font.clone();
     let move_ = interaction.clone();
-    let move_content_x = content_x;
     let move_font = font.clone();
 
     div()
@@ -410,18 +424,10 @@ fn render_line(
                 .flex_row()
                 .flex_1()
                 .overflow_x_hidden()
-                .child(
-                    canvas(
-                        move |bounds, _window, _cx| measure_x.set(bounds.origin.x),
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .size_full(),
-                )
                 .child(render_spans(text, runs, selection))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
-                    let local_x = event.position.x - down_content_x.get();
+                    let local_x = event.position.x - content_x;
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
                     down.drag_anchor.set(Some(offset));
@@ -438,7 +444,7 @@ fn render_line(
                         return;
                     };
                     let width = measure_char_width(&move_.char_width, &move_font, window);
-                    let local_x = event.position.x - move_content_x.get();
+                    let local_x = event.position.x - content_x;
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });
                     let range = if anchor <= head {

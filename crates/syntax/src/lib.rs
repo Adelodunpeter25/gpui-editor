@@ -93,9 +93,12 @@ pub fn highlight_themed(
 
     // Fast ASCII check: if all ASCII, byte offset == char offset (zero extra allocations)
     let is_ascii = text.is_ascii();
-    let char_offset_table = if !is_ascii {
+    // `u32` (not `usize`): halves this table's transient footprint on
+    // 64-bit (4 vs 8 bytes per byte of source text) — no file this editor
+    // handles exceeds u32::MAX bytes.
+    let char_offset_table: Option<Vec<u32>> = if !is_ascii {
         let mut table = Vec::with_capacity(text.len() + 1);
-        let mut char_count = 0usize;
+        let mut char_count = 0u32;
         for (byte_idx, _) in text.char_indices() {
             while table.len() < byte_idx {
                 table.push(char_count.saturating_sub(1));
@@ -114,9 +117,9 @@ pub fn highlight_themed(
     let byte_to_char = |byte_idx: usize| -> usize {
         if let Some(ref table) = char_offset_table {
             if byte_idx < table.len() {
-                table[byte_idx]
+                table[byte_idx] as usize
             } else {
-                *table.last().unwrap_or(&0)
+                *table.last().unwrap_or(&0) as usize
             }
         } else {
             byte_idx
