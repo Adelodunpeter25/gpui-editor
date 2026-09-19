@@ -214,6 +214,7 @@ fn render_diff_line(
         .flex()
         .flex_row()
         .items_center()
+        .w_full()
         .px_2()
         .h(font.line_height)
         .font_family(font.family.clone())
