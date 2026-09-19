@@ -26,6 +26,8 @@ use syntax::{Language, ThemePreset};
 use crate::types::FontConfig;
 use crate::{color_for, render_scrollbar, render_spans};
 
+pub use diff::{DiffLine, DiffLineKind, DiffResult};
+
 pub struct DiffState {
     pub(crate) result: diff::DiffResult,
     language: Option<&'static Language>,
@@ -35,8 +37,12 @@ pub struct DiffState {
 
 impl DiffState {
     pub fn new(old: &str, new: &str, language: Option<&'static Language>) -> Self {
+        Self::from_result(diff::diff_lines(old, new), language)
+    }
+
+    pub fn from_result(result: diff::DiffResult, language: Option<&'static Language>) -> Self {
         Self {
-            result: diff::diff_lines(old, new),
+            result,
             language,
             theme: ThemePreset::GitHubDark,
             font: FontConfig::default(),
@@ -55,6 +61,10 @@ impl DiffState {
 
     pub fn set_texts(&mut self, old: &str, new: &str) {
         self.result = diff::diff_lines(old, new);
+    }
+
+    pub fn set_result(&mut self, result: diff::DiffResult) {
+        self.result = result;
     }
 
     pub fn set_language(&mut self, language: Option<&'static Language>) {
