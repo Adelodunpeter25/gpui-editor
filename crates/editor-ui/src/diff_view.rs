@@ -27,8 +27,6 @@ use syntax::{Language, ThemePreset};
 use crate::types::FontConfig;
 use crate::{color_for, render_scrollbar, render_spans};
 
-pub use diff::{DiffLine, DiffLineKind, DiffResult};
-
 const DIFF_WRAP_GUTTER_RESERVE: Pixels = px(112.0);
 const WRAP_WIDTH_BUCKET: f32 = 32.0;
 

@@ -134,6 +134,8 @@ impl Render for EditorView {
             None
         };
 
+        let char_width = measure_char_width(&self.char_width, &font, window);
+
         if self
             .wrap_cache
             .borrow()
@@ -141,7 +143,7 @@ impl Render for EditorView {
         {
             let rebuilt = {
                 let state = self.state.read(cx);
-                WrapCache::rebuild(state, wrap_width, &font, window)
+                WrapCache::rebuild(state, wrap_width, &font, char_width, window)
             };
             *self.wrap_cache.borrow_mut() = rebuilt;
         }
@@ -224,10 +226,17 @@ impl Render for EditorView {
                                 let row_end = state.row_end_offset(buffer_row);
                                 let row_selection = row_local_selection(&selection, row_start, row_end)
                                     .and_then(|s| clip_to_subrange(&s, &sub_range));
+                                let indent_px = if sub > 0 {
+                                    char_width * (cache.indent_chars(buffer_row) as f32)
+                                } else {
+                                    px(0.)
+                                };
                                 let meta = RowMeta {
                                     row: buffer_row,
                                     show_line_number: sub == 0,
                                     col_offset: sub_range.start as u32,
+                                    content_x,
+                                    indent_px,
                                 };
                                 render_line(
                                     meta,
@@ -235,7 +244,6 @@ impl Render for EditorView {
                                     runs,
                                     row_selection,
                                     row_font.clone(),
-                                    content_x,
                                     interaction.clone(),
                                 )
                             })
@@ -372,6 +380,12 @@ struct RowMeta {
     row: u32,
     show_line_number: bool,
     col_offset: u32,
+    /// Where this row's text content starts, x-wise (gutter + padding).
+    content_x: Pixels,
+    /// Extra left padding for a wrapped continuation line, so it aligns
+    /// under its own indent instead of restarting at column 0. `0` for a
+    /// row's first sub-line.
+    indent_px: Pixels,
 }
 
 fn render_line(
@@ -380,13 +394,14 @@ fn render_line(
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
     font: FontConfig,
-    content_x: Pixels,
     interaction: RowInteraction,
 ) -> impl IntoElement {
     let RowMeta {
         row,
         show_line_number,
         col_offset,
+        content_x,
+        indent_px,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -395,6 +410,11 @@ fn render_line(
     };
     let row_len = text.chars().count();
     let line_height = font.line_height;
+    // Continuation sub-lines are left-padded by `indent_px` so a wrapped
+    // line visually aligns under its own indent (see `WrapCache::rebuild`);
+    // hit-testing has to account for that same offset or clicks would land
+    // on the wrong character on any indented, wrapped line.
+    let hit_test_x = content_x + indent_px;
 
     let down = interaction.clone();
     let down_font = font.clone();
@@ -425,10 +445,11 @@ fn render_line(
                 .flex_row()
                 .flex_1()
                 .overflow_x_hidden()
+                .pl(indent_px)
                 .child(render_spans(text, runs, selection))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
-                    let local_x = event.position.x - content_x;
+                    let local_x = event.position.x - hit_test_x;
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
                     down.drag_anchor.set(Some(offset));
@@ -445,7 +466,7 @@ fn render_line(
                         return;
                     };
                     let width = measure_char_width(&move_.char_width, &move_font, window);
-                    let local_x = event.position.x - content_x;
+                    let local_x = event.position.x - hit_test_x;
                     let col = col_offset + column_for_x(local_x, width, row_len);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });
                     let range = if anchor <= head {
