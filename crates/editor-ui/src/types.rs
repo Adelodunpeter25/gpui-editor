@@ -437,6 +437,9 @@ pub struct EditorView {
     pub(crate) selecting: Rc<Cell<bool>>,
     /// Fixed end of the in-progress drag; the other end follows the mouse.
     pub(crate) drag_anchor: Rc<Cell<Option<usize>>>,
+    /// `Some((mouse_y_at_down, scroll_offset_y_at_down))` while the scrollbar
+    /// thumb is being dragged; `None` otherwise.
+    pub(crate) thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
 }
 
 impl EditorView {
@@ -449,6 +452,7 @@ impl EditorView {
             char_width: Rc::new(Cell::new(None)),
             selecting: Rc::new(Cell::new(false)),
             drag_anchor: Rc::new(Cell::new(None)),
+            thumb_dragging: Rc::new(Cell::new(None)),
         }
     }
 

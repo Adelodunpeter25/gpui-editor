@@ -9,6 +9,7 @@
 mod types;
 
 use edit_buffer::Point;
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::cell::Cell;
 use std::ops::Range;
@@ -157,7 +158,90 @@ impl Render for EditorView {
                 .w_full()
                 .h(list_height),
             )
+            .when(self.scroll_handle.is_scrollable(), |el| {
+                el.child(render_scrollbar(
+                    self.scroll_handle.clone(),
+                    self.thumb_dragging.clone(),
+                ))
+            })
+            .on_mouse_move({
+                let scroll_handle = self.scroll_handle.clone();
+                let thumb_dragging = self.thumb_dragging.clone();
+                move |event, window, _cx| {
+                    let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() else {
+                        return;
+                    };
+                    let base = scroll_handle.0.borrow().base_handle.clone();
+                    let track_height = base.bounds().size.height;
+                    let max_offset_y = base.max_offset().y;
+                    let thumb_height = scrollbar_thumb_height(track_height, max_offset_y);
+                    let track_range = (track_height - thumb_height).max(px(1.));
+                    let delta = event.position.y - start_mouse_y;
+                    let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))
+                        .clamp(-max_offset_y, px(0.));
+                    base.set_offset(point(base.offset().x, new_offset_y));
+                    window.refresh();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let thumb_dragging = self.thumb_dragging.clone();
+                move |_event, _window, _cx| thumb_dragging.set(None)
+            })
     }
+}
+
+/// Minimum thumb height so a huge file never shrinks it to invisibility.
+const MIN_SCROLLBAR_THUMB: Pixels = px(24.0);
+
+fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels {
+    let content_height = track_height + max_offset_y;
+    if content_height <= px(0.) {
+        return track_height;
+    }
+    let ratio = track_height / content_height;
+    (track_height * ratio).max(MIN_SCROLLBAR_THUMB).min(track_height)
+}
+
+/// Thin draggable scrollbar for the editor's `uniform_list`, hand-rolled
+/// since raw gpui has no standalone scrollbar widget (only baked into its
+/// `list()` element, which this editor doesn't use).
+fn render_scrollbar(
+    scroll_handle: UniformListScrollHandle,
+    thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+) -> impl IntoElement {
+    let base = scroll_handle.0.borrow().base_handle.clone();
+    let track_height = base.bounds().size.height;
+    let max_offset_y = base.max_offset().y;
+    let thumb_height = scrollbar_thumb_height(track_height, max_offset_y);
+    let scroll_ratio = if max_offset_y > px(0.) {
+        (-base.offset().y / max_offset_y).clamp(0., 1.)
+    } else {
+        0.
+    };
+    let thumb_top = (track_height - thumb_height).max(px(0.)) * scroll_ratio;
+
+    div()
+        .id("gpui-editor-scrollbar-track")
+        .absolute()
+        .top_0()
+        .right_0()
+        .w(px(8.))
+        .h_full()
+        .child(
+            div()
+                .id("gpui-editor-scrollbar-thumb")
+                .absolute()
+                .top(thumb_top)
+                .right(px(1.))
+                .w(px(6.))
+                .h(thumb_height)
+                .rounded_md()
+                .bg(rgba(0xffffff33))
+                .hover(|s| s.bg(rgba(0xffffff55)))
+                .on_mouse_down(MouseButton::Left, move |event, _window, _cx| {
+                    thumb_dragging.set(Some((event.position.y, base.offset().y)));
+                }),
+        )
 }
 
 /// Clip the whole-buffer selection range to `row_start..row_end`, in row-local
