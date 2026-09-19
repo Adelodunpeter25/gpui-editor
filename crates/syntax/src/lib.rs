@@ -26,12 +26,26 @@ pub enum Capture {
     Plain,
 }
 
-/// Char-offset span with a capture kind. Packed-friendly (u32 triple).
+/// Char-offset span with a capture kind and the theme's actual foreground
+/// color for that scope (`None` if the theme leaves it unstyled).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HighlightSpan {
     pub start: usize,
     pub end: usize,
     pub capture: Capture,
+    pub color: Option<(u8, u8, u8)>,
+}
+
+/// Parse a lumis theme hex color ("#rrggbb") into RGB bytes.
+fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let hex = hex.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
 }
 
 #[derive(Debug, Clone)]
@@ -81,12 +95,23 @@ fn scope_to_capture(scope: &str) -> Capture {
     }
 }
 
-/// Highlight input text with `lumis` syntax engine.
+/// Highlight input text with `lumis` syntax engine using the given theme
+/// preset (defaults to `GitHubDark` if `None`).
 /// Converts byte ranges to char offsets for editor compatibility.
 pub fn highlight(
     text: &str,
     language: Option<&Language>,
     buffer_version: u64,
+) -> HighlightedVersion {
+    highlight_themed(text, language, buffer_version, None)
+}
+
+/// Same as [`highlight`], but with an explicit theme preset driving span colors.
+pub fn highlight_themed(
+    text: &str,
+    language: Option<&Language>,
+    buffer_version: u64,
+    theme: Option<ThemePreset>,
 ) -> HighlightedVersion {
     let mut spans = Vec::new();
 
@@ -124,14 +149,15 @@ pub fn highlight(
         }
     };
 
-    let default_theme = lumis::themes::get("github_dark").ok();
+    let theme = theme.unwrap_or(ThemePreset::GitHubDark).to_theme();
 
     let _ = lumis::highlight::highlight_iter(
         text,
         lang.lumis_lang,
-        default_theme,
-        |_text, _language, range, scope, _style| {
+        theme,
+        |_text, _language, range, scope, style| {
             let capture = scope_to_capture(scope);
+            let color = style.fg.as_deref().and_then(parse_hex_color);
             let start = byte_to_char(range.start);
             let end = byte_to_char(range.end);
             if start < end {
@@ -139,6 +165,7 @@ pub fn highlight(
                     start,
                     end,
                     capture,
+                    color,
                 });
             }
             Ok::<_, std::io::Error>(())

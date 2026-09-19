@@ -8,7 +8,7 @@
 use edit_buffer::{Buffer, Edit};
 use gpui::*;
 use std::ops::Range;
-use syntax::{Capture, HighlightSpan, HighlightedVersion, Language};
+use syntax::{Capture, HighlightSpan, HighlightedVersion, Language, ThemePreset};
 
 // ---------------------------------------------------------------------------
 // Model (pure, testable without a Window)
@@ -61,6 +61,7 @@ impl Default for IndentOptions {
 pub struct EditorState {
     buffer: Buffer,
     language: Option<&'static Language>,
+    theme: ThemePreset,
     highlight: HighlightedVersion,
     mode: Mode,
     selection: Selection,
@@ -76,6 +77,8 @@ struct StyledSpan {
     /// Char range *within the row*.
     range: Range<usize>,
     capture: Capture,
+    /// Theme's actual foreground color for this scope, from `lumis`.
+    color: Option<(u8, u8, u8)>,
 }
 
 impl EditorState {
@@ -90,12 +93,14 @@ impl EditorState {
     }
 
     fn from_buffer(buffer: Buffer, language: Option<&'static Language>, mode: Mode) -> Self {
+        let theme = ThemePreset::GitHubDark;
         let version = buffer.version();
         let text = buffer.text().to_string();
-        let highlight = syntax::highlight(&text, language, version);
+        let highlight = syntax::highlight_themed(&text, language, version, Some(theme));
         let mut this = Self {
             buffer,
             language,
+            theme,
             highlight,
             mode,
             selection: Selection::default(),
@@ -137,6 +142,10 @@ impl EditorState {
         self.language
     }
 
+    pub fn theme(&self) -> ThemePreset {
+        self.theme
+    }
+
     pub fn line_text(&self, row: u32) -> String {
         self.buffer.line_text(row)
     }
@@ -155,6 +164,11 @@ impl EditorState {
 
     pub fn set_language(&mut self, language: Option<&'static Language>) {
         self.language = language;
+        self.rehighlight();
+    }
+
+    pub fn set_theme(&mut self, theme: ThemePreset) {
+        self.theme = theme;
         self.rehighlight();
     }
 
@@ -229,7 +243,7 @@ impl EditorState {
     fn rehighlight(&mut self) {
         let version = self.buffer.version();
         let text = self.buffer.text().to_string();
-        self.highlight = syntax::highlight(&text, self.language, version);
+        self.highlight = syntax::highlight_themed(&text, self.language, version, Some(self.theme));
         self.rebuild_row_spans();
     }
 
@@ -269,6 +283,7 @@ impl EditorState {
                     self.row_spans[row].push(StyledSpan {
                         range: lo..hi,
                         capture: s.capture,
+                        color: s.color,
                     });
                 }
             }
@@ -394,7 +409,13 @@ impl Render for EditorView {
                     .map(|spans| {
                         spans
                             .iter()
-                            .map(|s| (s.range.clone(), color_for(s.capture)))
+                            .map(|s| {
+                                let color = s
+                                    .color
+                                    .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
+                                    .unwrap_or_else(|| color_for(s.capture));
+                                (s.range.clone(), color)
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
