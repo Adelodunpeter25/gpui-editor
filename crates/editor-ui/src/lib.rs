@@ -3,10 +3,11 @@
 //! M0: readonly viewer + optional single-cursor edit stub.
 //! State lives in `Entity<EditorState>`; view holds the handle only.
 //! `edit-buffer` and `syntax` stay GPUI-free so the host app can reuse them
-//! headless. Model/view types live in `types.rs`; this file holds the
-//! `Render` impl and its paint helpers.
+//! headless. Model/view types live in `types.rs`, word-wrap in `wrap.rs`;
+//! this file holds the `Render` impl and its paint helpers.
 
 mod types;
+mod wrap;
 
 use edit_buffer::Point;
 use gpui::prelude::FluentBuilder;
@@ -15,7 +16,8 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use syntax::Capture;
-use types::{clip_to_subrange, RowInteraction, StyledSpan, WrapCache};
+use types::{RowInteraction, StyledSpan};
+use wrap::{clip_to_subrange, WrapCache};
 
 pub use types::{EditorState, EditorView, IndentOptions, Mode, SearchState, Selection};
 
