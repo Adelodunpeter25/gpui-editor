@@ -43,7 +43,7 @@ pub fn init(cx: &mut App) {
 /// Measure (and cache) the monospace glyph advance width for pixel -> column
 /// hit testing. Cached alongside the `FontConfig` it was measured for, so a
 /// runtime font change re-measures instead of reusing a stale width.
-fn measure_char_width(
+pub(crate) fn measure_char_width(
     cache: &Rc<RefCell<Option<(FontConfig, Pixels)>>>,
     font_config: &FontConfig,
     window: &mut Window,
@@ -97,7 +97,7 @@ const WRAP_GUTTER_RESERVE: Pixels = px(72.0);
 /// existing debounce-on-edit pattern the rest of the codebase uses.
 const WRAP_WIDTH_BUCKET: f32 = 32.0;
 
-fn round_wrap_width(width: Pixels) -> Pixels {
+pub(crate) fn round_wrap_width(width: Pixels) -> Pixels {
     px((f32::from(width) / WRAP_WIDTH_BUCKET).round() * WRAP_WIDTH_BUCKET)
 }
 
@@ -143,7 +143,15 @@ impl Render for EditorView {
         {
             let rebuilt = {
                 let state = self.state.read(cx);
-                WrapCache::rebuild(state, wrap_width, &font, char_width, window)
+                WrapCache::rebuild(
+                    state.line_count(),
+                    |row| state.line_text(row),
+                    state.version(),
+                    wrap_width,
+                    &font,
+                    char_width,
+                    window,
+                )
             };
             *self.wrap_cache.borrow_mut() = rebuilt;
         }

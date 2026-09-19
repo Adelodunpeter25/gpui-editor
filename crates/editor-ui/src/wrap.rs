@@ -1,15 +1,20 @@
-//! Word wrap: buffer-row <-> visual-row mapping.
+//! Word wrap: row <-> visual-row mapping.
 //!
 //! Render-time concern (needs a `Window`/text system to measure glyph
 //! widths), so it lives on `EditorView`, not the GPUI-free `EditorState`
 //! (`types.rs`). Kept in its own module rather than folded into `types.rs`
 //! or `lib.rs` since it's a distinct, self-contained algorithm — one more
 //! thing to keep track of if merged into an already-busy file.
+//!
+//! Deliberately not coupled to `EditorState`: `rebuild` takes a row count +
+//! a `Fn(u32) -> String` row-text getter instead of `&EditorState` directly,
+//! so `DiffView` (`diff_view.rs`, rows = `DiffLine`s, not buffer lines) can
+//! share the same wrap algorithm instead of a second copy of it.
 
 use gpui::*;
 use std::ops::Range;
 
-use crate::types::{EditorState, FontConfig};
+use crate::types::FontConfig;
 
 /// Maps buffer rows to visual (wrapped) rows. Rebuilt whenever the buffer
 /// version, wrap width, wrap-enabled flag, or font changes — never per
@@ -18,7 +23,7 @@ use crate::types::{EditorState, FontConfig};
 /// system.
 pub(crate) struct WrapCache {
     wrap_width: Option<Pixels>,
-    buffer_version: u64,
+    version: u64,
     font: FontConfig,
     /// Per buffer row: row-local char offsets where a visual break occurs
     /// (end-exclusive boundaries of every sub-line except the last). Empty
@@ -36,11 +41,11 @@ pub(crate) struct WrapCache {
 
 impl Default for WrapCache {
     fn default() -> Self {
-        // `buffer_version: u64::MAX` guarantees `is_stale` is true on the
+        // `version: u64::MAX` guarantees `is_stale` is true on the
         // first real check even though a fresh buffer's version is 0.
         Self {
             wrap_width: None,
-            buffer_version: u64::MAX,
+            version: u64::MAX,
             font: FontConfig::default(),
             row_breaks: Vec::new(),
             row_indent_chars: Vec::new(),
@@ -53,28 +58,33 @@ impl WrapCache {
     pub(crate) fn is_stale(
         &self,
         wrap_width: Option<Pixels>,
-        buffer_version: u64,
+        version: u64,
         font: &FontConfig,
     ) -> bool {
-        self.wrap_width != wrap_width || self.buffer_version != buffer_version || &self.font != font
+        self.wrap_width != wrap_width || self.version != version || &self.font != font
     }
 
     /// Rebuild for the given wrap width (`None` disables wrapping) and the
     /// monospace glyph width `char_width` was already measured with (same
-    /// value `EditorView`'s render path uses for mouse hit-testing — passed
-    /// in rather than re-measured here so indent padding at wrap time and
-    /// indent padding at render time can never drift apart). Uses gpui's
-    /// own `LineWrapper` (cached per-char glyph widths internally), so this
-    /// is O(total buffer chars) once, not per row measured from scratch —
-    /// same cost class as `EditorState::rebuild_row_spans`.
+    /// value the render path uses for mouse hit-testing — passed in rather
+    /// than re-measured here so indent padding at wrap time and indent
+    /// padding at render time can never drift apart). Uses gpui's own
+    /// `LineWrapper` (cached per-char glyph widths internally), so this is
+    /// O(total chars) once, not per row measured from scratch — same cost
+    /// class as `EditorState::rebuild_row_spans`.
+    ///
+    /// `rows`/`line_text` decouple this from any one row source:
+    /// `EditorView` passes `(state.line_count(), |row| state.line_text(row))`;
+    /// `DiffView` passes its `DiffLine` count and per-line text the same way.
     pub(crate) fn rebuild(
-        state: &EditorState,
+        rows: u32,
+        line_text: impl Fn(u32) -> String,
+        version: u64,
         wrap_width: Option<Pixels>,
         font: &FontConfig,
         char_width: Pixels,
         window: &mut Window,
     ) -> Self {
-        let rows = state.line_count();
         let mut row_breaks: Vec<Vec<usize>> = Vec::with_capacity(rows as usize);
         let mut row_indent_chars: Vec<u32> = Vec::with_capacity(rows as usize);
         let mut visual_index: Vec<(u32, u32)> = Vec::new();
@@ -92,7 +102,7 @@ impl WrapCache {
                     .text_system()
                     .line_wrapper(gpui::font(font.family.clone()), font.size);
                 for row in 0..rows {
-                    let text = state.line_text(row);
+                    let text = line_text(row);
                     if text.is_empty() {
                         row_breaks.push(Vec::new());
                         row_indent_chars.push(0);
@@ -144,7 +154,7 @@ impl WrapCache {
 
         Self {
             wrap_width,
-            buffer_version: state.version(),
+            version,
             font: font.clone(),
             row_breaks,
             row_indent_chars,
