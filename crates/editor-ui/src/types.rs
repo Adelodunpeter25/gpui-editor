@@ -179,6 +179,12 @@ impl EditorState {
         self.buffer.line_text(row)
     }
 
+    /// Full buffer text, owned. Allocates — for occasional whole-buffer use
+    /// (e.g. feeding a `diff::DiffState`), not the per-frame render path.
+    pub fn text(&self) -> String {
+        self.buffer.text().to_string()
+    }
+
     // -- builders / setters --------------------------------------------------
 
     pub fn with_mode(mut self, mode: Mode) -> Self {

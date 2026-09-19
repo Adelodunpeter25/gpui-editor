@@ -1,5 +1,6 @@
 mod types;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::borrow::Cow;
 use types::DemoApp;
@@ -7,7 +8,7 @@ use types::DemoApp;
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
-actions!(demo, [OpenFile, Quit, ToggleWrap]);
+actions!(demo, [OpenFile, Quit, ToggleWrap, ToggleDiff]);
 
 const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
@@ -39,6 +40,13 @@ impl Render for DemoApp {
             .unwrap_or("plain text");
 
         let wrap_enabled = self.state.read(cx).wrap_enabled();
+        let showing_diff = self.showing_diff;
+        let diff = self.diff_state.read(cx);
+        let diff_label = if diff.is_empty() {
+            "Diff (no changes)".to_string()
+        } else {
+            format!("Diff (+{} -{})", diff.added(), diff.removed())
+        };
 
         div()
             .size_full()
@@ -55,6 +63,9 @@ impl Render for DemoApp {
             }))
             .on_action(cx.listener(|this, _: &ToggleWrap, _window, cx| {
                 this.toggle_wrap(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleDiff, _window, cx| {
+                this.toggle_diff(cx);
             }))
             // Top toolbar / status bar with Open button
             .child(
@@ -129,6 +140,30 @@ impl Render for DemoApp {
                             )
                             .child(
                                 div()
+                                    .id("diff-toggle")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(if showing_diff {
+                                        rgb(0x89b4fa)
+                                    } else {
+                                        rgb(0x313244)
+                                    })
+                                    .hover(|s| s.bg(rgb(0x45475a)))
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .text_color(if showing_diff {
+                                        rgb(0x1e1e2e)
+                                    } else {
+                                        rgb(0xcdd6f4)
+                                    })
+                                    .child(diff_label)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_diff(cx);
+                                    })),
+                            )
+                            .child(
+                                div()
                                     .text_xs()
                                     .px_2()
                                     .py_0p5()
@@ -139,8 +174,14 @@ impl Render for DemoApp {
                             ),
                     ),
             )
-            // Editor main area
-            .child(div().flex_1().size_full().child(self.view.clone()))
+            // Editor main area — swaps to the diff view while toggled on.
+            .child(div().flex_1().size_full().map(|el| {
+                if showing_diff {
+                    el.child(self.diff_view.clone())
+                } else {
+                    el.child(self.view.clone())
+                }
+            }))
     }
 }
 
@@ -174,6 +215,7 @@ fn main() {
                 name: "View".into(),
                 items: vec![
                     MenuItem::action("Toggle Word Wrap", ToggleWrap),
+                    MenuItem::action("Toggle Diff View", ToggleDiff),
                 ],
                 disabled: false,
             },
@@ -185,6 +227,8 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-alt-z", ToggleWrap, Some("DemoApp")),
             KeyBinding::new("ctrl-alt-z", ToggleWrap, Some("DemoApp")),
+            KeyBinding::new("cmd-alt-d", ToggleDiff, Some("DemoApp")),
+            KeyBinding::new("ctrl-alt-d", ToggleDiff, Some("DemoApp")),
         ]);
         editor_ui::init(cx);
 
