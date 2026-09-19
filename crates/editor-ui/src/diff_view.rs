@@ -251,7 +251,10 @@ fn render_diff_line(
     .child(
         div()
             .w_4()
+            .h_full()
             .flex_shrink_0()
+            .border_r_1()
+            .border_color(rgba(0xffffff1a))
             .text_color(marker_color)
             .child(marker_label),
     )

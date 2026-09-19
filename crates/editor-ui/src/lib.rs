@@ -441,7 +441,10 @@ fn render_line(
         .child(
             div()
                 .w_12()
+                .h_full()
                 .flex_shrink_0()
+                .border_r_1()
+                .border_color(rgba(0xffffff1a))
                 .text_color(rgb(0x585b70))
                 .child(line_no),
         )
