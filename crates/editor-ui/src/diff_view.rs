@@ -357,8 +357,10 @@ impl Render for DiffView {
         drop(wrap_cache);
 
         // Same cached widest-line scan as `EditorView`: O(total chars) per
-        // diff version, never per frame.
-        let max_text_px = match self.content_width_cache.borrow().clone() {
+        // diff version, never per frame. (Bound to a local first — see the
+        // borrow-guard note on `EditorView`'s identical cache.)
+        let cached_width = self.content_width_cache.borrow().clone();
+        let max_text_px = match cached_width {
             Some((v, f, w)) if v == diff_version && f == font => w,
             _ => {
                 let w = state_snapshot.max_line_width(char_width);

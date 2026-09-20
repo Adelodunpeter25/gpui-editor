@@ -197,8 +197,11 @@ impl Render for EditorView {
 
         // Widest-row text width, cached per (buffer version, font). The scan
         // is O(total chars) so it must not run per frame — same reasoning as
-        // the wrap-width bucketing below it.
-        let max_text_px = match self.content_width_cache.borrow().clone() {
+        // the wrap-width bucketing below it. (Bound to a local first: the
+        // `Ref` guard in a match scrutinee would otherwise still be alive
+        // when the recompute arm takes `borrow_mut`.)
+        let cached_width = self.content_width_cache.borrow().clone();
+        let max_text_px = match cached_width {
             Some((v, f, w)) if v == state_snapshot_version && f == font => w,
             _ => {
                 let w = self.state.read(cx).max_line_width(char_width);
