@@ -11,7 +11,7 @@ use std::rc::Rc;
 use syntax::{Capture, HighlightSpan, Language, ThemePreset};
 
 use crate::wrap::WrapCache;
-use crate::{Copy, SelectAll};
+use crate::{chars_display_width, Copy, SelectAll};
 
 // ---------------------------------------------------------------------------
 // Model (pure, testable without a Window)
@@ -330,6 +330,25 @@ impl EditorState {
     /// Char offset for a (row, col) point, clamped by the buffer.
     pub fn point_to_offset(&self, point: Point) -> usize {
         self.buffer.point_to_offset(point)
+    }
+
+    /// Widest buffer row in pixels (tab stops honored, capped at the same
+    /// `MAX_ROW_RENDER_CHARS` the view paints) — drives horizontal-scroll
+    /// content width so the scroll range matches what's actually rendered.
+    /// Zero-copy: scans rope slices, no per-line allocation.
+    pub fn max_line_width(&self, char_width: Pixels) -> Pixels {
+        let mut max = px(0.);
+        for row in 0..self.line_count() {
+            let w = chars_display_width(
+                self.buffer.line_slice(row).chars(),
+                char_width,
+                self.indent.tab_width,
+            );
+            if w > max {
+                max = w;
+            }
+        }
+        max
     }
 
     // -- search (M3, sync literal; debounced overlay lands in view) ----------

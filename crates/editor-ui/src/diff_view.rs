@@ -27,6 +27,7 @@ use syntax::{Language, ThemePreset};
 use crate::types::FontConfig;
 use crate::wrap::{clip_to_subrange, WrapCache};
 use crate::{color_for, measure_char_width, render_scrollbar, render_spans, round_wrap_width};
+use crate::text_display_width;
 
 /// Gutter width before wrapped text starts: two `w_10()` line-number
 /// columns + `px_2()` padding on both sides + the row's own `border_l_4()`
@@ -135,6 +136,21 @@ impl DiffState {
 
     pub fn is_empty(&self) -> bool {
         self.result.is_empty()
+    }
+
+    /// Widest diff line in pixels (tab stops honored, capped at the same
+    /// render limit the view paints) — drives horizontal-scroll content
+    /// width. Diff lines carry no indent config; tabs use a fixed width.
+    pub fn max_line_width(&self, char_width: Pixels) -> Pixels {
+        const DIFF_TAB_WIDTH: u32 = 4;
+        let mut max = px(0.);
+        for line in &self.result.lines {
+            let w = text_display_width(&line.text, char_width, DIFF_TAB_WIDTH);
+            if w > max {
+                max = w;
+            }
+        }
+        max
     }
 }
 

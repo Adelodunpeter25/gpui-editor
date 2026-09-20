@@ -137,7 +137,36 @@ const CONTENT_X_REM: f32 = 3.25;
 /// only hides the overflow visually after all that work already happened.
 /// Clamping what's built also clamps what's selectable in the row, matching
 /// how most editors treat absurdly long lines.
-const MAX_ROW_RENDER_CHARS: usize = 4000;
+pub(crate) const MAX_ROW_RENDER_CHARS: usize = 4000;
+
+/// Pixel width of a char stream with tab stops, skipping line breaks.
+/// Capped at `MAX_ROW_RENDER_CHARS` so a width scan describes the same
+/// painted prefix the row renderer builds — otherwise dead scroll range
+/// would trail every pathologically long line.
+pub(crate) fn chars_display_width(
+    chars: impl Iterator<Item = char>,
+    char_width: Pixels,
+    tab_width: u32,
+) -> Pixels {
+    let cw = f32::from(char_width);
+    let tab_px = cw * tab_width.max(1) as f32;
+    let mut x = 0f32;
+    for ch in chars
+        .filter(|c| *c != '\n' && *c != '\r')
+        .take(MAX_ROW_RENDER_CHARS)
+    {
+        if ch == '\t' {
+            x = tab_px * ((x / tab_px).floor() + 1.0);
+        } else {
+            x += cw;
+        }
+    }
+    px(x)
+}
+
+pub(crate) fn text_display_width(text: &str, char_width: Pixels, tab_width: u32) -> Pixels {
+    chars_display_width(text.chars(), char_width, tab_width)
+}
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -330,16 +359,23 @@ impl Render for EditorView {
     }
 }
 
-/// Minimum thumb height so a huge file never shrinks it to invisibility.
+/// Minimum thumb size so a huge file never shrinks a scrollbar to invisibility.
 const MIN_SCROLLBAR_THUMB: Pixels = px(24.0);
 
-pub(crate) fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels {
-    let content_height = track_height + max_offset_y;
-    if content_height <= px(0.) {
-        return track_height;
+/// Thumb length for a scrollbar axis: viewport share of total content,
+/// clamped to stay visible and inside the track. Shared by the vertical and
+/// horizontal bars so both axes agree on the math.
+pub fn scrollbar_thumb_size(track_len: Pixels, max_offset: Pixels) -> Pixels {
+    let content_len = track_len + max_offset;
+    if content_len <= px(0.) {
+        return track_len;
     }
-    let ratio = track_height / content_height;
-    (track_height * ratio).max(MIN_SCROLLBAR_THUMB).min(track_height)
+    let ratio = track_len / content_len;
+    (track_len * ratio).max(MIN_SCROLLBAR_THUMB).min(track_len)
+}
+
+pub(crate) fn scrollbar_thumb_height(track_height: Pixels, max_offset_y: Pixels) -> Pixels {
+    scrollbar_thumb_size(track_height, max_offset_y)
 }
 
 /// Thin draggable scrollbar for the editor's `uniform_list`, hand-rolled
