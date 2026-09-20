@@ -484,10 +484,12 @@ impl Render for DiffView {
                 match content_width {
                     Some(w) => div()
                         .id("gpui-diff-hscroll")
-                        // Both axes set (see `EditorView`): vertical clamps
-                        // at zero here, so wheel gestures never drift
-                        // sideways.
+                        // Both axes set + axis-restricted (see
+                        // `EditorView`): vertical clamps at zero, and each
+                        // gesture locks to whichever axis it's moving on so
+                        // scroll never bleeds cross-axis.
                         .overflow_scroll()
+                        .restrict_scroll_to_axis()
                         .track_scroll(&self.h_handle)
                         .size_full()
                         .child(list.w(w))

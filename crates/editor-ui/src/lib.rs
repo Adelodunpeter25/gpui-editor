@@ -402,8 +402,13 @@ impl Render for EditorView {
                         // over a fully-scrolled list would convert into
                         // horizontal drift; with y set, vertical clamps at
                         // zero (the child list is never taller than this
-                        // container).
+                        // container). `restrict_scroll_to_axis` locks each
+                        // individual gesture to whichever axis it's
+                        // predominantly moving on, so a horizontal trackpad
+                        // swipe/drag can't bleed a few pixels of vertical
+                        // scroll (or vice versa) before the y clamp kicks in.
                         .overflow_scroll()
+                        .restrict_scroll_to_axis()
                         .track_scroll(&self.h_handle)
                         .size_full()
                         .child(list.w(w))
