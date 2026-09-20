@@ -196,18 +196,27 @@ impl Render for EditorView {
         let char_width = measure_char_width(&self.char_width, &font, window);
 
         // Widest-row text width, cached per (buffer version, font). The scan
-        // is O(total chars) so it must not run per frame — same reasoning as
-        // the wrap-width bucketing below it. (Bound to a local first: the
-        // `Ref` guard in a match scrutinee would otherwise still be alive
-        // when the recompute arm takes `borrow_mut`.)
-        let cached_width = self.content_width_cache.borrow().clone();
-        let max_text_px = match cached_width {
-            Some((v, f, w)) if v == state_snapshot_version && f == font => w,
-            _ => {
-                let w = self.state.read(cx).max_line_width(char_width);
-                *self.content_width_cache.borrow_mut() =
-                    Some((state_snapshot_version, font.clone(), w));
-                w
+        // is O(total chars), so beyond not running per frame (the cache),
+        // it also only runs at all when wrap is off — wrapped text never
+        // needs a horizontal range, so there's nothing to size for. This is
+        // pure arithmetic (no shaping), so even a full-buffer scan is cheap;
+        // if a pathologically huge file ever makes it show up in profiling,
+        // move it to a background task the same way `rehighlight_from` does.
+        // (Bound to a local first: the `Ref` guard in a match scrutinee
+        // would otherwise still be alive when the recompute arm takes
+        // `borrow_mut`.)
+        let max_text_px = if wrap_enabled {
+            px(0.)
+        } else {
+            let cached_width = self.content_width_cache.borrow().clone();
+            match cached_width {
+                Some((v, f, w)) if v == state_snapshot_version && f == font => w,
+                _ => {
+                    let w = self.state.read(cx).max_line_width(char_width);
+                    *self.content_width_cache.borrow_mut() =
+                        Some((state_snapshot_version, font.clone(), w));
+                    w
+                }
             }
         };
 
@@ -233,30 +242,44 @@ impl Render for EditorView {
         let visual_row_count = self.wrap_cache.borrow().visual_row_count();
 
         let content_x = window.rem_size() * CONTENT_X_REM;
-        // Wrap off: rows size to the widest line so the outer div gains a
-        // horizontal range; wrap on: rows fill the viewport, no h-scroll.
+        // Only the widest line actually overflowing the viewport earns the
+        // horizontal-scroll layout — a short file (or a long file where
+        // every line still fits) renders as a plain, non-scrollable list,
+        // same as before this feature existed. This is what makes h-scroll
+        // "only work when needed" instead of wrapping every file in the
+        // extra scroll container/gutter-hiding machinery below.
+        let can_h_scroll = !wrap_enabled && content_x + max_text_px > measured_width;
+        if !can_h_scroll {
+            // Drop any stale horizontal offset from a previous file/width
+            // that *did* scroll, so a later transition back to h-scroll (or
+            // just re-measuring at a wider viewport) doesn't start "pre-
+            // scrolled" with no visible way to have caused it.
+            let y = self.h_handle.offset().y;
+            self.h_handle.set_offset(point(px(0.), y));
+        }
         // Trailing pad keeps the longest line's last glyph off the edge and
         // gives scroll-past-the-end room, Monaco-style.
         const H_TRAILING_PAD: Pixels = px(64.0);
-        let content_width = if wrap_enabled {
-            None
-        } else {
-            Some(content_x + max_text_px + H_TRAILING_PAD)
-        };
+        let content_width = can_h_scroll.then(|| content_x + max_text_px + H_TRAILING_PAD);
 
-        // Render-time horizontal shift, used to pin the gutter while text
-        // slides under it. Scrolling notifies this view (GPUI re-renders on
-        // scroll-offset change), so this stays live frame to frame.
+        // Render-time horizontal shift. Scrolling notifies this view (GPUI
+        // re-renders on scroll-offset change), so this stays live frame to
+        // frame.
         let scroll_x = (-self.h_handle.offset().x).max(px(0.));
         // Gutter geometry mirrors the old in-flow layout (`px_3` row pad +
         // `w_10` gutter = CONTENT_X_REM) so text starts at the same x.
         let rem = window.rem_size();
         let gutter_pad = rem * 0.75;
         let gutter_w = rem * 2.5;
-        let gutter_left = scroll_x + gutter_pad;
+        // Rather than pin the gutter in place while text slides under it,
+        // hide it entirely once the user has scrolled right at all — line
+        // numbers for rows whose start is off-screen to the left aren't
+        // useful pinned in place anyway, and this avoids an absolute-
+        // position-plus-opaque-background overlay hack just to fake it.
+        let show_gutter = scroll_x <= px(0.5);
         // Bottom bar visibility, from last frame's prepaint — same staleness
         // contract as the existing vertical bar's `is_scrollable()` check.
-        let h_scrollable = self.h_handle.max_offset().x > px(0.);
+        let h_scrollable = can_h_scroll && self.h_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -299,21 +322,11 @@ impl Render for EditorView {
                 .absolute()
                 .size_full(),
             )
-            .child(
-                div()
-                    .id("gpui-editor-hscroll")
-                    // Both axes: with y unset, a vertical wheel gesture over
-                    // a fully-scrolled list would convert into horizontal
-                    // drift; with y set, vertical clamps at zero (the child
-                    // list is never taller than this container).
-                    .overflow_scroll()
-                    .track_scroll(&self.h_handle)
-                    .size_full()
-                    .child({
-                        let list = uniform_list(
-                            "gpui-editor-lines",
-                            visual_row_count,
-                            cx.processor(move |this, range: Range<usize>, _window, cx| {
+            .child({
+                let list = uniform_list(
+                    "gpui-editor-lines",
+                    visual_row_count,
+                    cx.processor(move |this, range: Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
                         let cache = wrap_cache.borrow();
@@ -359,8 +372,9 @@ impl Render for EditorView {
                                     col_offset: sub_range.start as u32,
                                     content_x,
                                     indent_px,
-                                    gutter_left,
+                                    gutter_pad,
                                     gutter_w,
+                                    show_gutter,
                                 };
                                 render_line(
                                     meta,
@@ -372,19 +386,35 @@ impl Render for EditorView {
                                 )
                             })
                             .collect()
-                    }))
-                        .track_scroll(&self.scroll_handle)
-                        .text_sm()
-                        .py_2()
-                        .h(list_height);
-                        match content_width {
-                            // Wrap off: list spans the widest line so the
-                            // outer div gains its horizontal scroll range.
-                            Some(w) => list.w(w),
-                            None => list.w_full(),
-                        }
-                    })
-            )
+                    }),
+                )
+                .track_scroll(&self.scroll_handle)
+                .text_sm()
+                .py_2()
+                .h(list_height);
+
+                match content_width {
+                    // A line overflows the viewport: size the list to it and
+                    // nest in a horizontally-scrollable container.
+                    Some(w) => div()
+                        .id("gpui-editor-hscroll")
+                        // Both axes: with y unset, a vertical wheel gesture
+                        // over a fully-scrolled list would convert into
+                        // horizontal drift; with y set, vertical clamps at
+                        // zero (the child list is never taller than this
+                        // container).
+                        .overflow_scroll()
+                        .track_scroll(&self.h_handle)
+                        .size_full()
+                        .child(list.w(w))
+                        .into_any_element(),
+                    // Nothing overflows: plain list, no h-scroll container
+                    // at all — this is the common case (most files, and any
+                    // file with wrap on) and should pay none of h-scroll's
+                    // extra layout/hit-testing cost.
+                    None => list.w_full().into_any_element(),
+                }
+            })
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
                     self.scroll_handle.clone(),
@@ -395,6 +425,7 @@ impl Render for EditorView {
                 el.child(render_h_scrollbar(
                     self.h_handle.clone(),
                     self.h_thumb_dragging.clone(),
+                    self.scroll_handle.is_scrollable(),
                 ))
             })
             .on_mouse_move({
@@ -506,8 +537,12 @@ pub(crate) fn render_scrollbar(
 pub(crate) fn render_h_scrollbar(
     scroll_handle: ScrollHandle,
     thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    v_scrollbar_visible: bool,
 ) -> impl IntoElement {
-    let track_width = scroll_handle.bounds().size.width;
+    // Leave the bottom-right corner to the vertical track (same width as
+    // its own `w(px(8.))`) instead of the two bars overlapping there.
+    let right_inset = if v_scrollbar_visible { px(8.) } else { px(0.) };
+    let track_width = scroll_handle.bounds().size.width - right_inset;
     let max_offset_x = scroll_handle.max_offset().x;
     let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
     let scroll_ratio = if max_offset_x > px(0.) {
@@ -522,7 +557,7 @@ pub(crate) fn render_h_scrollbar(
         .absolute()
         .bottom_0()
         .left_0()
-        .right_0()
+        .right(right_inset)
         .h(px(10.))
         .child(
             div()
@@ -585,14 +620,18 @@ struct RowMeta {
     /// under its own indent instead of restarting at column 0. `0` for a
     /// row's first sub-line.
     indent_px: Pixels,
-    /// Absolute x of the gutter's left edge inside the (horizontally
-    /// scrollable) row: the live scroll shift plus the row's left pad.
-    /// Baked at render time; scrolling re-renders this view, so it stays
-    /// live and the gutter reads as frozen while text slides under it.
-    gutter_left: Pixels,
-    /// Gutter width (`w_10`); text starts at `gutter_left + gutter_w + gap`
+    /// Gutter's left edge in row-local (unscrolled) coordinates — constant,
+    /// since the gutter is only ever shown at (or near) zero horizontal
+    /// scroll (see `show_gutter`).
+    gutter_pad: Pixels,
+    /// Gutter width (`w_10`); text starts at `gutter_pad + gutter_w + gap`
     /// = `content_x` in row coordinates.
     gutter_w: Pixels,
+    /// False once the row's horizontal scroll container has been scrolled
+    /// right at all — line numbers for a row whose start is off-screen
+    /// aren't useful, so the gutter just hides rather than staying pinned
+    /// over sliding text.
+    show_gutter: bool,
 }
 
 fn render_line(
@@ -609,8 +648,9 @@ fn render_line(
         col_offset,
         content_x,
         indent_px,
-        gutter_left,
+        gutter_pad,
         gutter_w,
+        show_gutter,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -695,22 +735,25 @@ fn render_line(
                     move_.last_head.set(Some(head));
                 }),
         )
-        // Frozen gutter: absolutely positioned at the live scroll shift so
-        // it stays put while text scrolls. Opaque background covers text
-        // sliding underneath; painted after content so it wins the overlap.
-        .child(
-            div()
-                .absolute()
-                .left(gutter_left)
-                .top_0()
-                .w(gutter_w)
-                .h_full()
-                .bg(Hsla::black())
-                .border_r_2()
-                .border_color(rgba(0xffffff1a))
-                .text_color(rgb(0x585b70))
-                .child(line_no),
-        )
+        // Gutter: hidden once the row is scrolled right at all (see
+        // `show_gutter`'s doc comment) rather than pinned in place over
+        // sliding text. Opaque background covers text sliding underneath
+        // while shown; painted after content so it wins the overlap.
+        .when(show_gutter, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .left(gutter_pad)
+                    .top_0()
+                    .w(gutter_w)
+                    .h_full()
+                    .bg(Hsla::black())
+                    .border_r_2()
+                    .border_color(rgba(0xffffff1a))
+                    .text_color(rgb(0x585b70))
+                    .child(line_no),
+            )
+        })
 }
 
 pub(crate) fn render_spans(

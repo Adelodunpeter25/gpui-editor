@@ -197,18 +197,36 @@ fn gutter_number(n: Option<u32>) -> String {
     n.map(|n| format!("{n:>4}")).unwrap_or_else(|| " ".repeat(4))
 }
 
-fn render_diff_line(
-    line: &diff::DiffLine,
+/// Bundles a diff row's positional bookkeeping — keeps `render_diff_line`'s
+/// own argument count from creeping past what a single glance can take in
+/// (mirrors `EditorView`'s `RowMeta` in `lib.rs`).
+struct DiffRowMeta {
     sub: u32,
     sub_range: Range<usize>,
     indent_px: Pixels,
+    gutter_pad: Pixels,
+    gutter_block_w: Pixels,
+    content_ml: Pixels,
+    /// False once scrolled right at all — see `EditorView`'s `show_gutter`.
+    show_gutter: bool,
+}
+
+fn render_diff_line(
+    line: &diff::DiffLine,
     language: Option<&'static Language>,
     theme: ThemePreset,
     font: &FontConfig,
-    gutter_left: Pixels,
-    gutter_block_w: Pixels,
-    content_ml: Pixels,
+    meta: DiffRowMeta,
 ) -> impl IntoElement {
+    let DiffRowMeta {
+        sub,
+        sub_range,
+        indent_px,
+        gutter_pad,
+        gutter_block_w,
+        content_ml,
+        show_gutter,
+    } = meta;
     // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
     // instead (matches how GitHub/most PR diff views do it), so `marker`
     // is now just the bar's color, `None` for context rows (no bar at all).
@@ -282,36 +300,38 @@ fn render_diff_line(
             .pl(indent_px)
             .child(render_spans(sub_text, runs, None)),
     )
-    // Frozen gutter block (both number columns): pinned at the live scroll
-    // shift with an opaque cover, same trick as `EditorView`'s row gutter.
-    .child(
-        div()
-            .absolute()
-            .left(gutter_left)
-            .top_0()
-            .w(gutter_block_w)
-            .h_full()
-            .bg(Hsla::black())
-            .flex()
-            .flex_row()
-            .child(
-                div()
-                    .w_10()
-                    .flex_shrink_0()
-                    .text_color(rgb(0x585b70))
-                    .child(old_label),
-            )
-            .child(
-                div()
-                    .w_10()
-                    .h_full()
-                    .flex_shrink_0()
-                    .border_r_2()
-                    .border_color(rgba(0xffffff1a))
-                    .text_color(rgb(0x585b70))
-                    .child(new_label),
-            ),
-    )
+    // Gutter block (both number columns): hidden once scrolled right at
+    // all, same as `EditorView`'s row gutter, instead of pinned in place.
+    .when(show_gutter, |el| {
+        el.child(
+            div()
+                .absolute()
+                .left(gutter_pad)
+                .top_0()
+                .w(gutter_block_w)
+                .h_full()
+                .bg(Hsla::black())
+                .flex()
+                .flex_row()
+                .child(
+                    div()
+                        .w_10()
+                        .flex_shrink_0()
+                        .text_color(rgb(0x585b70))
+                        .child(old_label),
+                )
+                .child(
+                    div()
+                        .w_10()
+                        .h_full()
+                        .flex_shrink_0()
+                        .border_r_2()
+                        .border_color(rgba(0xffffff1a))
+                        .text_color(rgb(0x585b70))
+                        .child(new_label),
+                ),
+        )
+    })
 }
 
 impl Render for DiffView {
@@ -357,16 +377,22 @@ impl Render for DiffView {
         drop(wrap_cache);
 
         // Same cached widest-line scan as `EditorView`: O(total chars) per
-        // diff version, never per frame. (Bound to a local first — see the
-        // borrow-guard note on `EditorView`'s identical cache.)
-        let cached_width = self.content_width_cache.borrow().clone();
-        let max_text_px = match cached_width {
-            Some((v, f, w)) if v == diff_version && f == font => w,
-            _ => {
-                let w = state_snapshot.max_line_width(char_width);
-                *self.content_width_cache.borrow_mut() =
-                    Some((diff_version, font.clone(), w));
-                w
+        // diff version, never per frame — and, same as `EditorView`, only
+        // when wrap is off, since wrapped text never needs a horizontal
+        // range. (Bound to a local first — see the borrow-guard note on
+        // `EditorView`'s identical cache.)
+        let max_text_px = if wrap_enabled {
+            px(0.)
+        } else {
+            let cached_width = self.content_width_cache.borrow().clone();
+            match cached_width {
+                Some((v, f, w)) if v == diff_version && f == font => w,
+                _ => {
+                    let w = state_snapshot.max_line_width(char_width);
+                    *self.content_width_cache.borrow_mut() =
+                        Some((diff_version, font.clone(), w));
+                    w
+                }
             }
         };
 
@@ -376,15 +402,20 @@ impl Render for DiffView {
         let gutter_pad = rem * 0.5;
         let gutter_block_w = rem * 5.0;
         let content_ml = rem * 5.5;
+        // Only earn the horizontal-scroll layout when a line actually
+        // overflows the viewport — see `EditorView`'s identical gate.
+        let can_h_scroll = !wrap_enabled && content_ml + max_text_px > measured_width;
+        if !can_h_scroll {
+            let y = self.h_handle.offset().y;
+            self.h_handle.set_offset(point(px(0.), y));
+        }
         const H_TRAILING_PAD: Pixels = px(64.0);
-        let content_width = if wrap_enabled {
-            None
-        } else {
-            Some(content_ml + max_text_px + H_TRAILING_PAD)
-        };
+        let content_width = can_h_scroll.then(|| content_ml + max_text_px + H_TRAILING_PAD);
         let scroll_x = (-self.h_handle.offset().x).max(px(0.));
-        let gutter_left = scroll_x + gutter_pad;
-        let h_scrollable = self.h_handle.max_offset().x > px(0.);
+        // Hidden once scrolled right at all, instead of pinned in place —
+        // see `EditorView`'s identical `show_gutter`.
+        let show_gutter = scroll_x <= px(0.5);
+        let h_scrollable = can_h_scroll && self.h_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -407,19 +438,11 @@ impl Render for DiffView {
                 .absolute()
                 .size_full(),
             )
-            .child(
-                div()
-                    .id("gpui-diff-hscroll")
-                    // Both axes set (see `EditorView`): vertical clamps at
-                    // zero here, so wheel gestures never drift sideways.
-                    .overflow_scroll()
-                    .track_scroll(&self.h_handle)
-                    .size_full()
-                    .child({
-                        let list = uniform_list(
-                            "gpui-diff-lines",
-                            visual_rows,
-                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+            .child({
+                let list = uniform_list(
+                    "gpui-diff-lines",
+                    visual_rows,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let language = state.language();
                         let theme = state.theme();
@@ -437,28 +460,41 @@ impl Render for DiffView {
                                 };
                                 render_diff_line(
                                     line,
-                                    sub,
-                                    sub_range,
-                                    indent_px,
                                     language,
                                     theme,
                                     font,
-                                    gutter_left,
-                                    gutter_block_w,
-                                    content_ml,
+                                    DiffRowMeta {
+                                        sub,
+                                        sub_range,
+                                        indent_px,
+                                        gutter_pad,
+                                        gutter_block_w,
+                                        content_ml,
+                                        show_gutter,
+                                    },
                                 )
                             })
                             .collect()
-                    }))
-                        .track_scroll(&self.scroll_handle)
-                        .text_sm()
-                        .h(list_height);
-                        match content_width {
-                            Some(w) => list.w(w),
-                            None => list.w_full(),
-                        }
                     }),
-            )
+                )
+                .track_scroll(&self.scroll_handle)
+                .text_sm()
+                .h(list_height);
+
+                match content_width {
+                    Some(w) => div()
+                        .id("gpui-diff-hscroll")
+                        // Both axes set (see `EditorView`): vertical clamps
+                        // at zero here, so wheel gestures never drift
+                        // sideways.
+                        .overflow_scroll()
+                        .track_scroll(&self.h_handle)
+                        .size_full()
+                        .child(list.w(w))
+                        .into_any_element(),
+                    None => list.w_full().into_any_element(),
+                }
+            })
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
                     self.scroll_handle.clone(),
@@ -469,6 +505,7 @@ impl Render for DiffView {
                 el.child(render_h_scrollbar(
                     self.h_handle.clone(),
                     self.h_thumb_dragging.clone(),
+                    self.scroll_handle.is_scrollable(),
                 ))
             })
             .on_mouse_move({
