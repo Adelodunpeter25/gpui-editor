@@ -211,6 +211,10 @@ impl EditorState {
         self.wrap_enabled
     }
 
+    pub fn tab_width(&self) -> u32 {
+        self.indent.tab_width
+    }
+
     pub fn font(&self) -> &FontConfig {
         &self.font
     }
@@ -567,6 +571,11 @@ pub struct EditorView {
     pub(crate) selecting: Rc<Cell<bool>>,
     /// Fixed end of the in-progress drag; the other end follows the mouse.
     pub(crate) drag_anchor: Rc<Cell<Option<usize>>>,
+    /// Buffer offset the drag last actually moved the selection head to, so
+    /// a mouse-move that resolves to the same character (e.g. y-only
+    /// movement, or two pixel positions rounding to the same column) can be
+    /// skipped instead of re-running `set_selection` + a repaint every time.
+    pub(crate) last_head: Rc<Cell<Option<usize>>>,
     /// `Some((mouse_y_at_down, scroll_offset_y_at_down))` while the scrollbar
     /// thumb is being dragged; `None` otherwise.
     pub(crate) thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
@@ -589,6 +598,7 @@ impl EditorView {
             char_width: Rc::new(RefCell::new(None)),
             selecting: Rc::new(Cell::new(false)),
             drag_anchor: Rc::new(Cell::new(None)),
+            last_head: Rc::new(Cell::new(None)),
             thumb_dragging: Rc::new(Cell::new(None)),
             viewport_width: Rc::new(Cell::new(px(0.))),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
@@ -616,4 +626,5 @@ pub(crate) struct RowInteraction {
     pub(crate) char_width: Rc<RefCell<Option<(FontConfig, Pixels)>>>,
     pub(crate) selecting: Rc<Cell<bool>>,
     pub(crate) drag_anchor: Rc<Cell<Option<usize>>>,
+    pub(crate) last_head: Rc<Cell<Option<usize>>>,
 }

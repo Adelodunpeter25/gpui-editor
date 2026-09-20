@@ -69,11 +69,32 @@ pub(crate) fn measure_char_width(
     width
 }
 
-/// Pixel x (relative to the row content's left edge) -> char column, clamped
-/// to `row_len`.
-fn column_for_x(local_x: Pixels, char_width: Pixels, row_len: usize) -> u32 {
-    let col = (local_x.max(px(0.)) / char_width).round().max(0.) as usize;
-    col.min(row_len) as u32
+/// Pixel x (relative to the row content's left edge) -> char column. Walks
+/// `text`'s chars accumulating pixel width rather than dividing by a flat
+/// `char_width`, since a tab doesn't occupy one glyph-width column — it
+/// advances to the next `tab_width`-column stop, same as `indent_for_newline`
+/// assumes. A single division here (the old approach) put every column after
+/// the first tab in a line off by however wide that tab rendered.
+fn column_for_x(local_x: Pixels, char_width: Pixels, text: &str, tab_width: u32) -> u32 {
+    let target = local_x.max(px(0.));
+    let mut x = px(0.);
+    let mut col: u32 = 0;
+    for ch in text.chars() {
+        let advance = if ch == '\t' {
+            let tab_px = f32::from(char_width) * tab_width.max(1) as f32;
+            let steps = (f32::from(x) / tab_px).floor() + 1.0;
+            px(tab_px * steps - f32::from(x))
+        } else {
+            char_width
+        };
+        let mid = x + advance / 2.0;
+        if target < mid {
+            return col;
+        }
+        x += advance;
+        col += 1;
+    }
+    col
 }
 
 fn resolve_color(span: &StyledSpan) -> Hsla {
@@ -108,6 +129,15 @@ pub(crate) fn round_wrap_width(width: Pixels) -> Pixels {
 /// *visible row*, remeasuring an identical value ~30 times a render for no
 /// reason, since every row has the same gutter/padding).
 const CONTENT_X_REM: f32 = 3.25;
+
+/// Cap on chars rendered/hit-tested per visual row. Without this, a single
+/// pathologically long line (a minified file, a giant JSON blob) with wrap
+/// off rebuilds a `chars().collect()` + one-div-per-syntax/selection-segment
+/// tree that size on *every* mouse-move during a drag — `.overflow_x_hidden()`
+/// only hides the overflow visually after all that work already happened.
+/// Clamping what's built also clamps what's selectable in the row, matching
+/// how most editors treat absurdly long lines.
+const MAX_ROW_RENDER_CHARS: usize = 4000;
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -168,6 +198,7 @@ impl Render for EditorView {
             char_width: self.char_width.clone(),
             selecting: self.selecting.clone(),
             drag_anchor: self.drag_anchor.clone(),
+            last_head: self.last_head.clone(),
         };
 
         div()
@@ -212,10 +243,13 @@ impl Render for EditorView {
                                 let full_text = state.line_text(buffer_row);
                                 let row_len = full_text.chars().count();
                                 let sub_range = cache.sub_range(buffer_row, sub, row_len);
+                                let sub_len = sub_range.end - sub_range.start;
+                                let render_len = sub_len.min(MAX_ROW_RENDER_CHARS);
+                                let sub_range = sub_range.start..sub_range.start + render_len;
                                 let text: String = full_text
                                     .chars()
                                     .skip(sub_range.start)
-                                    .take(sub_range.end - sub_range.start)
+                                    .take(render_len)
                                     .collect();
                                 let runs = state
                                     .row_spans
@@ -416,7 +450,6 @@ fn render_line(
     } else {
         String::new()
     };
-    let row_len = text.chars().count();
     let line_height = font.line_height;
     // Continuation sub-lines are left-padded by `indent_px` so a wrapped
     // line visually aligns under its own indent (see `WrapCache::rebuild`);
@@ -426,8 +459,10 @@ fn render_line(
 
     let down = interaction.clone();
     let down_font = font.clone();
+    let down_text = Rc::new(text.clone());
     let move_ = interaction.clone();
     let move_font = font.clone();
+    let move_text = Rc::new(text.clone());
 
     div()
         .id(("editor-line", row as usize))
@@ -461,13 +496,16 @@ fn render_line(
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
                     let local_x = event.position.x - hit_test_x;
-                    let col = col_offset + column_for_x(local_x, width, row_len);
+                    let tab_width = down.state.read(cx).tab_width();
+                    let col = col_offset + column_for_x(local_x, width, &down_text, tab_width);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
                     down.drag_anchor.set(Some(offset));
+                    down.last_head.set(None);
                     down.selecting.set(true);
-                    down.state
-                        .update(cx, |state, _| state.set_selection(offset..offset));
-                    window.refresh();
+                    down.state.update(cx, |state, cx| {
+                        state.set_selection(offset..offset);
+                        cx.notify();
+                    });
                 })
                 .on_mouse_move(move |event, window, cx| {
                     if !move_.selecting.get() {
@@ -478,15 +516,22 @@ fn render_line(
                     };
                     let width = measure_char_width(&move_.char_width, &move_font, window);
                     let local_x = event.position.x - hit_test_x;
-                    let col = col_offset + column_for_x(local_x, width, row_len);
+                    let tab_width = move_.state.read(cx).tab_width();
+                    let col = col_offset + column_for_x(local_x, width, &move_text, tab_width);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });
+                    if move_.last_head.get() == Some(head) {
+                        return;
+                    }
                     let range = if anchor <= head {
                         anchor..head
                     } else {
                         head..anchor
                     };
-                    move_.state.update(cx, |state, _| state.set_selection(range));
-                    window.refresh();
+                    move_.state.update(cx, |state, cx| {
+                        state.set_selection(range);
+                        cx.notify();
+                    });
+                    move_.last_head.set(Some(head));
                 }),
         )
 }
