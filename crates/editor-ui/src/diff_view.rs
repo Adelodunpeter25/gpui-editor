@@ -26,8 +26,8 @@ use syntax::{Language, ThemePreset};
 
 use crate::types::FontConfig;
 use crate::wrap::{clip_to_subrange, WrapCache};
-use crate::{color_for, measure_char_width, render_scrollbar, render_spans, round_wrap_width};
-use crate::text_display_width;
+use crate::{color_for, measure_char_width, render_h_scrollbar, render_scrollbar};
+use crate::{render_spans, round_wrap_width, scrollbar_thumb_size, text_display_width};
 
 /// Gutter width before wrapped text starts: two `w_10()` line-number
 /// columns + `px_2()` padding on both sides + the row's own `border_l_4()`
@@ -165,6 +165,13 @@ pub struct DiffView {
     /// view has no mouse-driven selection, so unlike `EditorView` this
     /// cache is never used for hit-testing).
     char_width: Rc<RefCell<Option<(FontConfig, Pixels)>>>,
+    /// Horizontal scroll state for the wrap-off path (same nesting as
+    /// `EditorView`: the `uniform_list` scrolls vertically inside an
+    /// `overflow_scroll` div tracked by this handle).
+    h_handle: ScrollHandle,
+    h_thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    /// Cached widest-line text width: `(diff version, font, max px)`.
+    content_width_cache: Rc<RefCell<Option<(u64, FontConfig, Pixels)>>>,
 }
 
 impl DiffView {
@@ -177,6 +184,9 @@ impl DiffView {
             thumb_dragging: Rc::new(Cell::new(None)),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
             char_width: Rc::new(RefCell::new(None)),
+            h_handle: ScrollHandle::new(),
+            h_thumb_dragging: Rc::new(Cell::new(None)),
+            content_width_cache: Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -195,6 +205,9 @@ fn render_diff_line(
     language: Option<&'static Language>,
     theme: ThemePreset,
     font: &FontConfig,
+    gutter_left: Pixels,
+    gutter_block_w: Pixels,
+    content_ml: Pixels,
 ) -> impl IntoElement {
     // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
     // instead (matches how GitHub/most PR diff views do it), so `marker`
@@ -230,17 +243,19 @@ fn render_diff_line(
         .collect();
 
     let mut row = div()
+        .relative()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
-        .px_2()
         .h(font.line_height)
         .font_family(font.family.clone())
         .text_size(font.size)
         // Colored left-edge bar for a changed row; invisible (matching
         // border width reserved either way, so layout doesn't shift
         // between changed/context rows) when there's no marker color.
+        // Lives at the row's scrolled edge (not in the frozen gutter), so
+        // it slides away with content — the numbers stay, the bar doesn't.
         .border_l_4()
         .border_color(marker.unwrap_or(transparent_black().into()));
     if let Some(bg) = bg {
@@ -259,29 +274,43 @@ fn render_diff_line(
     };
     row.child(
         div()
-            .w_10()
-            .flex_shrink_0()
-            .text_color(rgb(0x585b70))
-            .child(old_label),
-    )
-    .child(
-        div()
-            .w_10()
-            .h_full()
-            .flex_shrink_0()
-            .border_r_2()
-            .border_color(rgba(0xffffff1a))
-            .text_color(rgb(0x585b70))
-            .child(new_label),
-    )
-    .child(
-        div()
             .flex()
             .flex_row()
             .flex_1()
-            .overflow_x_hidden()
+            .flex_shrink_0()
+            .ml(content_ml)
             .pl(indent_px)
             .child(render_spans(sub_text, runs, None)),
+    )
+    // Frozen gutter block (both number columns): pinned at the live scroll
+    // shift with an opaque cover, same trick as `EditorView`'s row gutter.
+    .child(
+        div()
+            .absolute()
+            .left(gutter_left)
+            .top_0()
+            .w(gutter_block_w)
+            .h_full()
+            .bg(Hsla::black())
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .w_10()
+                    .flex_shrink_0()
+                    .text_color(rgb(0x585b70))
+                    .child(old_label),
+            )
+            .child(
+                div()
+                    .w_10()
+                    .h_full()
+                    .flex_shrink_0()
+                    .border_r_2()
+                    .border_color(rgba(0xffffff1a))
+                    .text_color(rgb(0x585b70))
+                    .child(new_label),
+            ),
     )
 }
 
@@ -327,6 +356,34 @@ impl Render for DiffView {
         let visual_rows = wrap_cache.visual_row_count();
         drop(wrap_cache);
 
+        // Same cached widest-line scan as `EditorView`: O(total chars) per
+        // diff version, never per frame.
+        let max_text_px = match self.content_width_cache.borrow().clone() {
+            Some((v, f, w)) if v == diff_version && f == font => w,
+            _ => {
+                let w = state_snapshot.max_line_width(char_width);
+                *self.content_width_cache.borrow_mut() =
+                    Some((diff_version, font.clone(), w));
+                w
+            }
+        };
+
+        let rem = window.rem_size();
+        // Old layout was `px_2` row pad + two `w_10` number columns; text
+        // started at 5.5rem. Kept identical so wrap widths don't shift.
+        let gutter_pad = rem * 0.5;
+        let gutter_block_w = rem * 5.0;
+        let content_ml = rem * 5.5;
+        const H_TRAILING_PAD: Pixels = px(64.0);
+        let content_width = if wrap_enabled {
+            None
+        } else {
+            Some(content_ml + max_text_px + H_TRAILING_PAD)
+        };
+        let scroll_x = (-self.h_handle.offset().x).max(px(0.));
+        let gutter_left = scroll_x + gutter_pad;
+        let h_scrollable = self.h_handle.max_offset().x > px(0.);
+
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
         let wrap_cache_handle = self.wrap_cache.clone();
@@ -349,10 +406,18 @@ impl Render for DiffView {
                 .size_full(),
             )
             .child(
-                uniform_list(
-                    "gpui-diff-lines",
-                    visual_rows,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                div()
+                    .id("gpui-diff-hscroll")
+                    // Both axes set (see `EditorView`): vertical clamps at
+                    // zero here, so wheel gestures never drift sideways.
+                    .overflow_scroll()
+                    .track_scroll(&self.h_handle)
+                    .size_full()
+                    .child({
+                        let list = uniform_list(
+                            "gpui-diff-lines",
+                            visual_rows,
+                            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let language = state.language();
                         let theme = state.theme();
@@ -368,15 +433,29 @@ impl Render for DiffView {
                                 } else {
                                     px(0.)
                                 };
-                                render_diff_line(line, sub, sub_range, indent_px, language, theme, font)
+                                render_diff_line(
+                                    line,
+                                    sub,
+                                    sub_range,
+                                    indent_px,
+                                    language,
+                                    theme,
+                                    font,
+                                    gutter_left,
+                                    gutter_block_w,
+                                    content_ml,
+                                )
                             })
                             .collect()
+                    }))
+                        .track_scroll(&self.scroll_handle)
+                        .text_sm()
+                        .h(list_height);
+                        match content_width {
+                            Some(w) => list.w(w),
+                            None => list.w_full(),
+                        }
                     }),
-                )
-                .track_scroll(&self.scroll_handle)
-                .text_sm()
-                .w_full()
-                .h(list_height),
             )
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
@@ -384,28 +463,50 @@ impl Render for DiffView {
                     self.thumb_dragging.clone(),
                 ))
             })
+            .when(h_scrollable, |el| {
+                el.child(render_h_scrollbar(
+                    self.h_handle.clone(),
+                    self.h_thumb_dragging.clone(),
+                ))
+            })
             .on_mouse_move({
                 let scroll_handle = self.scroll_handle.clone();
                 let thumb_dragging = self.thumb_dragging.clone();
+                let h_handle = self.h_handle.clone();
+                let h_thumb_dragging = self.h_thumb_dragging.clone();
                 move |event, window, _cx| {
-                    let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() else {
-                        return;
-                    };
-                    let base = scroll_handle.0.borrow().base_handle.clone();
-                    let track_height = base.bounds().size.height;
-                    let max_offset_y = base.max_offset().y;
-                    let thumb_height = crate::scrollbar_thumb_height(track_height, max_offset_y);
-                    let track_range = (track_height - thumb_height).max(px(1.));
-                    let delta = event.position.y - start_mouse_y;
-                    let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))
-                        .clamp(-max_offset_y, px(0.));
-                    base.set_offset(point(base.offset().x, new_offset_y));
-                    window.refresh();
+                    if let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() {
+                        let base = scroll_handle.0.borrow().base_handle.clone();
+                        let track_height = base.bounds().size.height;
+                        let max_offset_y = base.max_offset().y;
+                        let thumb_height = crate::scrollbar_thumb_height(track_height, max_offset_y);
+                        let track_range = (track_height - thumb_height).max(px(1.));
+                        let delta = event.position.y - start_mouse_y;
+                        let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))
+                            .clamp(-max_offset_y, px(0.));
+                        base.set_offset(point(base.offset().x, new_offset_y));
+                        window.refresh();
+                    }
+                    if let Some((start_mouse_x, start_offset_x)) = h_thumb_dragging.get() {
+                        let track_width = h_handle.bounds().size.width;
+                        let max_offset_x = h_handle.max_offset().x;
+                        let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
+                        let track_range = (track_width - thumb_width).max(px(1.));
+                        let delta = event.position.x - start_mouse_x;
+                        let new_offset_x = (start_offset_x - delta * (max_offset_x / track_range))
+                            .clamp(-max_offset_x, px(0.));
+                        h_handle.set_offset(point(new_offset_x, h_handle.offset().y));
+                        window.refresh();
+                    }
                 }
             })
             .on_mouse_up(MouseButton::Left, {
                 let thumb_dragging = self.thumb_dragging.clone();
-                move |_event, _window, _cx| thumb_dragging.set(None)
+                let h_thumb_dragging = self.h_thumb_dragging.clone();
+                move |_event, _window, _cx| {
+                    thumb_dragging.set(None);
+                    h_thumb_dragging.set(None);
+                }
             })
     }
 }
