@@ -598,6 +598,18 @@ pub struct EditorView {
     /// `Some((mouse_y_at_down, scroll_offset_y_at_down))` while the scrollbar
     /// thumb is being dragged; `None` otherwise.
     pub(crate) thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    /// Horizontal scroll state for the wrap-off path. The `uniform_list`
+    /// only tracks vertical scrolling itself, so the wrap-off layout nests
+    /// it in an `overflow_scroll` div tracked by this handle (both axes set
+    /// so a vertical wheel gesture never bleeds into horizontal drift).
+    pub(crate) h_handle: ScrollHandle,
+    /// `Some((mouse_x_at_down, scroll_offset_x_at_down))` while the
+    /// horizontal scrollbar thumb is being dragged; `None` otherwise.
+    pub(crate) h_thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    /// Cached widest-row text width: `(buffer version, font, max px)`.
+    /// Recomputed only when the buffer or font changes, not per frame —
+    /// the scan is O(total chars), same cost class as a wrap rebuild.
+    pub(crate) content_width_cache: Rc<RefCell<Option<(u64, FontConfig, Pixels)>>>,
     /// Last measured pixel width of the editor viewport (same `canvas` that
     /// measures `viewport_height`). Drives word-wrap's wrap width.
     pub(crate) viewport_width: Rc<Cell<Pixels>>,
@@ -619,6 +631,9 @@ impl EditorView {
             drag_anchor: Rc::new(Cell::new(None)),
             last_head: Rc::new(Cell::new(None)),
             thumb_dragging: Rc::new(Cell::new(None)),
+            h_handle: ScrollHandle::new(),
+            h_thumb_dragging: Rc::new(Cell::new(None)),
+            content_width_cache: Rc::new(RefCell::new(None)),
             viewport_width: Rc::new(Cell::new(px(0.))),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
         }
@@ -646,4 +661,8 @@ pub(crate) struct RowInteraction {
     pub(crate) selecting: Rc<Cell<bool>>,
     pub(crate) drag_anchor: Rc<Cell<Option<usize>>>,
     pub(crate) last_head: Rc<Cell<Option<usize>>>,
+    /// Horizontal scroll handle, read live in mouse handlers so hit-testing
+    /// stays correct while scrolled (render-time values would go stale
+    /// between repaints during a scroll + drag combination).
+    pub(crate) h_handle: ScrollHandle,
 }

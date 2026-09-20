@@ -195,6 +195,19 @@ impl Render for EditorView {
 
         let char_width = measure_char_width(&self.char_width, &font, window);
 
+        // Widest-row text width, cached per (buffer version, font). The scan
+        // is O(total chars) so it must not run per frame — same reasoning as
+        // the wrap-width bucketing below it.
+        let max_text_px = match self.content_width_cache.borrow().clone() {
+            Some((v, f, w)) if v == state_snapshot_version && f == font => w,
+            _ => {
+                let w = self.state.read(cx).max_line_width(char_width);
+                *self.content_width_cache.borrow_mut() =
+                    Some((state_snapshot_version, font.clone(), w));
+                w
+            }
+        };
+
         if self
             .wrap_cache
             .borrow()
@@ -217,6 +230,30 @@ impl Render for EditorView {
         let visual_row_count = self.wrap_cache.borrow().visual_row_count();
 
         let content_x = window.rem_size() * CONTENT_X_REM;
+        // Wrap off: rows size to the widest line so the outer div gains a
+        // horizontal range; wrap on: rows fill the viewport, no h-scroll.
+        // Trailing pad keeps the longest line's last glyph off the edge and
+        // gives scroll-past-the-end room, Monaco-style.
+        const H_TRAILING_PAD: Pixels = px(64.0);
+        let content_width = if wrap_enabled {
+            None
+        } else {
+            Some(content_x + max_text_px + H_TRAILING_PAD)
+        };
+
+        // Render-time horizontal shift, used to pin the gutter while text
+        // slides under it. Scrolling notifies this view (GPUI re-renders on
+        // scroll-offset change), so this stays live frame to frame.
+        let scroll_x = (-self.h_handle.offset().x).max(px(0.));
+        // Gutter geometry mirrors the old in-flow layout (`px_3` row pad +
+        // `w_10` gutter = CONTENT_X_REM) so text starts at the same x.
+        let rem = window.rem_size();
+        let gutter_pad = rem * 0.75;
+        let gutter_w = rem * 2.5;
+        let gutter_left = scroll_x + gutter_pad;
+        // Bottom bar visibility, from last frame's prepaint — same staleness
+        // contract as the existing vertical bar's `is_scrollable()` check.
+        let h_scrollable = self.h_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -228,6 +265,7 @@ impl Render for EditorView {
             selecting: self.selecting.clone(),
             drag_anchor: self.drag_anchor.clone(),
             last_head: self.last_head.clone(),
+            h_handle: self.h_handle.clone(),
         };
 
         div()
@@ -259,10 +297,20 @@ impl Render for EditorView {
                 .size_full(),
             )
             .child(
-                uniform_list(
-                    "gpui-editor-lines",
-                    visual_row_count,
-                    cx.processor(move |this, range: Range<usize>, _window, cx| {
+                div()
+                    .id("gpui-editor-hscroll")
+                    // Both axes: with y unset, a vertical wheel gesture over
+                    // a fully-scrolled list would convert into horizontal
+                    // drift; with y set, vertical clamps at zero (the child
+                    // list is never taller than this container).
+                    .overflow_scroll()
+                    .track_scroll(&self.h_handle)
+                    .size_full()
+                    .child({
+                        let list = uniform_list(
+                            "gpui-editor-lines",
+                            visual_row_count,
+                            cx.processor(move |this, range: Range<usize>, _window, cx| {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
                         let cache = wrap_cache.borrow();
@@ -308,6 +356,8 @@ impl Render for EditorView {
                                     col_offset: sub_range.start as u32,
                                     content_x,
                                     indent_px,
+                                    gutter_left,
+                                    gutter_w,
                                 };
                                 render_line(
                                     meta,
@@ -319,13 +369,18 @@ impl Render for EditorView {
                                 )
                             })
                             .collect()
-                    }),
-                )
-                .track_scroll(&self.scroll_handle)
-                .text_sm()
-                .py_2()
-                .w_full()
-                .h(list_height),
+                    }))
+                        .track_scroll(&self.scroll_handle)
+                        .text_sm()
+                        .py_2()
+                        .h(list_height);
+                        match content_width {
+                            // Wrap off: list spans the widest line so the
+                            // outer div gains its horizontal scroll range.
+                            Some(w) => list.w(w),
+                            None => list.w_full(),
+                        }
+                    })
             )
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
@@ -333,28 +388,50 @@ impl Render for EditorView {
                     self.thumb_dragging.clone(),
                 ))
             })
+            .when(h_scrollable, |el| {
+                el.child(render_h_scrollbar(
+                    self.h_handle.clone(),
+                    self.h_thumb_dragging.clone(),
+                ))
+            })
             .on_mouse_move({
                 let scroll_handle = self.scroll_handle.clone();
                 let thumb_dragging = self.thumb_dragging.clone();
+                let h_handle = self.h_handle.clone();
+                let h_thumb_dragging = self.h_thumb_dragging.clone();
                 move |event, window, _cx| {
-                    let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() else {
-                        return;
-                    };
-                    let base = scroll_handle.0.borrow().base_handle.clone();
-                    let track_height = base.bounds().size.height;
-                    let max_offset_y = base.max_offset().y;
-                    let thumb_height = scrollbar_thumb_height(track_height, max_offset_y);
-                    let track_range = (track_height - thumb_height).max(px(1.));
-                    let delta = event.position.y - start_mouse_y;
-                    let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))
-                        .clamp(-max_offset_y, px(0.));
-                    base.set_offset(point(base.offset().x, new_offset_y));
-                    window.refresh();
+                    if let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() {
+                        let base = scroll_handle.0.borrow().base_handle.clone();
+                        let track_height = base.bounds().size.height;
+                        let max_offset_y = base.max_offset().y;
+                        let thumb_height = scrollbar_thumb_height(track_height, max_offset_y);
+                        let track_range = (track_height - thumb_height).max(px(1.));
+                        let delta = event.position.y - start_mouse_y;
+                        let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))
+                            .clamp(-max_offset_y, px(0.));
+                        base.set_offset(point(base.offset().x, new_offset_y));
+                        window.refresh();
+                    }
+                    if let Some((start_mouse_x, start_offset_x)) = h_thumb_dragging.get() {
+                        let track_width = h_handle.bounds().size.width;
+                        let max_offset_x = h_handle.max_offset().x;
+                        let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
+                        let track_range = (track_width - thumb_width).max(px(1.));
+                        let delta = event.position.x - start_mouse_x;
+                        let new_offset_x = (start_offset_x - delta * (max_offset_x / track_range))
+                            .clamp(-max_offset_x, px(0.));
+                        h_handle.set_offset(point(new_offset_x, h_handle.offset().y));
+                        window.refresh();
+                    }
                 }
             })
             .on_mouse_up(MouseButton::Left, {
                 let thumb_dragging = self.thumb_dragging.clone();
-                move |_event, _window, _cx| thumb_dragging.set(None)
+                let h_thumb_dragging = self.h_thumb_dragging.clone();
+                move |_event, _window, _cx| {
+                    thumb_dragging.set(None);
+                    h_thumb_dragging.set(None);
+                }
             })
     }
 }
@@ -420,6 +497,47 @@ pub(crate) fn render_scrollbar(
         )
 }
 
+/// Bottom scrollbar for the wrap-off horizontal range. Mirrors
+/// `render_scrollbar` on the x axis; driven by the outer `overflow_scroll`
+/// div's `ScrollHandle` rather than the vertical `uniform_list` handle.
+pub(crate) fn render_h_scrollbar(
+    scroll_handle: ScrollHandle,
+    thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+) -> impl IntoElement {
+    let track_width = scroll_handle.bounds().size.width;
+    let max_offset_x = scroll_handle.max_offset().x;
+    let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
+    let scroll_ratio = if max_offset_x > px(0.) {
+        (-scroll_handle.offset().x / max_offset_x).clamp(0., 1.)
+    } else {
+        0.
+    };
+    let thumb_left = (track_width - thumb_width).max(px(0.)) * scroll_ratio;
+
+    div()
+        .id("gpui-editor-hscrollbar-track")
+        .absolute()
+        .bottom_0()
+        .left_0()
+        .right_0()
+        .h(px(10.))
+        .child(
+            div()
+                .id("gpui-editor-hscrollbar-thumb")
+                .absolute()
+                .left(thumb_left)
+                .bottom(px(1.))
+                .h(px(6.))
+                .w(thumb_width)
+                .rounded_md()
+                .bg(rgba(0xffffff33))
+                .hover(|s| s.bg(rgba(0xffffff55)))
+                .on_mouse_down(MouseButton::Left, move |event, _window, _cx| {
+                    thumb_dragging.set(Some((event.position.x, scroll_handle.offset().x)));
+                }),
+        )
+}
+
 /// Clip the whole-buffer selection range to `row_start..row_end`, in row-local
 /// char coords. `None` if the row has no overlap with the selection.
 fn row_local_selection(
@@ -464,6 +582,14 @@ struct RowMeta {
     /// under its own indent instead of restarting at column 0. `0` for a
     /// row's first sub-line.
     indent_px: Pixels,
+    /// Absolute x of the gutter's left edge inside the (horizontally
+    /// scrollable) row: the live scroll shift plus the row's left pad.
+    /// Baked at render time; scrolling re-renders this view, so it stays
+    /// live and the gutter reads as frozen while text slides under it.
+    gutter_left: Pixels,
+    /// Gutter width (`w_10`); text starts at `gutter_left + gutter_w + gap`
+    /// = `content_x` in row coordinates.
+    gutter_w: Pixels,
 }
 
 fn render_line(
@@ -480,6 +606,8 @@ fn render_line(
         col_offset,
         content_x,
         indent_px,
+        gutter_left,
+        gutter_w,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -502,23 +630,14 @@ fn render_line(
 
     div()
         .id(("editor-line", row as usize))
+        .relative()
         .flex()
         .flex_row()
         .items_center()
-        .px_3()
+        .w_full()
         .h(line_height)
         .font_family(font.family.clone())
         .text_size(font.size)
-        .child(
-            div()
-                .w_10()
-                .h_full()
-                .flex_shrink_0()
-                .border_r_2()
-                .border_color(rgba(0xffffff1a))
-                .text_color(rgb(0x585b70))
-                .child(line_no),
-        )
         .child(
             div()
                 .id(("editor-line-content", row as usize))
@@ -526,12 +645,14 @@ fn render_line(
                 .flex()
                 .flex_row()
                 .flex_1()
-                .overflow_x_hidden()
+                .flex_shrink_0()
+                .ml(content_x)
                 .pl(indent_px)
                 .child(render_spans(text, runs, selection))
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
-                    let local_x = event.position.x - hit_test_x;
+                    let scroll_x = (-down.h_handle.offset().x).max(px(0.));
+                    let local_x = event.position.x - hit_test_x + scroll_x;
                     let tab_width = down.state.read(cx).tab_width();
                     let col = col_offset + column_for_x(local_x, width, &down_text, tab_width);
                     let offset = down.state.read(cx).point_to_offset(Point { row, col });
@@ -551,7 +672,8 @@ fn render_line(
                         return;
                     };
                     let width = measure_char_width(&move_.char_width, &move_font, window);
-                    let local_x = event.position.x - hit_test_x;
+                    let scroll_x = (-move_.h_handle.offset().x).max(px(0.));
+                    let local_x = event.position.x - hit_test_x + scroll_x;
                     let tab_width = move_.state.read(cx).tab_width();
                     let col = col_offset + column_for_x(local_x, width, &move_text, tab_width);
                     let head = move_.state.read(cx).point_to_offset(Point { row, col });
@@ -569,6 +691,22 @@ fn render_line(
                     });
                     move_.last_head.set(Some(head));
                 }),
+        )
+        // Frozen gutter: absolutely positioned at the live scroll shift so
+        // it stays put while text scrolls. Opaque background covers text
+        // sliding underneath; painted after content so it wins the overlap.
+        .child(
+            div()
+                .absolute()
+                .left(gutter_left)
+                .top_0()
+                .w(gutter_w)
+                .h_full()
+                .bg(Hsla::black())
+                .border_r_2()
+                .border_color(rgba(0xffffff1a))
+                .text_color(rgb(0x585b70))
+                .child(line_no),
         )
 }
 

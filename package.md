@@ -161,7 +161,7 @@ to `|editor, cx|` and pass `cx` through.
 ```rust
 state.update(cx, |editor, cx| {
     editor.set_theme(syntax::ThemePreset::Dracula, cx); // default is GitHubDark
-    editor.set_wrap_enabled(true);   // default is off (clip long lines) — no cx needed
+    editor.set_wrap_enabled(true);   // default is off (horizontal scroll) — no cx needed
 });
 ```
 
