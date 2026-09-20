@@ -242,20 +242,33 @@ impl Render for EditorView {
         let visual_row_count = self.wrap_cache.borrow().visual_row_count();
 
         let content_x = window.rem_size() * CONTENT_X_REM;
+        // Horizontal scroll rides the *same* handle/hitbox as the list's own
+        // vertical scroll (its `base_handle`, which already carries a full
+        // x/y offset) instead of a second, independently-scrollable div
+        // wrapped around it. Two separate scrollable regions each install
+        // their own wheel listener and gpui dispatches both (nesting isn't
+        // exclusive) — the inner one has no idea a horizontal gesture is in
+        // progress on the outer one, so a trackpad swipe's small residual
+        // y noise (real hardware never reports an exactly-zero cross-axis
+        // delta) gets scrolled as if it were an intentional vertical flick.
+        // One handle + `restrict_scroll_to_axis` (set below, only when
+        // h-scroll is actually active) means gpui's own axis-exclusivity
+        // logic runs once, in one place, on the real gesture.
+        let base_handle = self.scroll_handle.0.borrow().base_handle.clone();
         // Only the widest line actually overflowing the viewport earns the
         // horizontal-scroll layout — a short file (or a long file where
         // every line still fits) renders as a plain, non-scrollable list,
         // same as before this feature existed. This is what makes h-scroll
         // "only work when needed" instead of wrapping every file in the
-        // extra scroll container/gutter-hiding machinery below.
+        // extra gutter-hiding machinery below.
         let can_h_scroll = !wrap_enabled && content_x + max_text_px > measured_width;
         if !can_h_scroll {
             // Drop any stale horizontal offset from a previous file/width
             // that *did* scroll, so a later transition back to h-scroll (or
             // just re-measuring at a wider viewport) doesn't start "pre-
             // scrolled" with no visible way to have caused it.
-            let y = self.h_handle.offset().y;
-            self.h_handle.set_offset(point(px(0.), y));
+            let y = base_handle.offset().y;
+            base_handle.set_offset(point(px(0.), y));
         }
         // Trailing pad keeps the longest line's last glyph off the edge and
         // gives scroll-past-the-end room, Monaco-style.
@@ -265,7 +278,7 @@ impl Render for EditorView {
         // Render-time horizontal shift. Scrolling notifies this view (GPUI
         // re-renders on scroll-offset change), so this stays live frame to
         // frame.
-        let scroll_x = (-self.h_handle.offset().x).max(px(0.));
+        let scroll_x = (-base_handle.offset().x).max(px(0.));
         // Gutter geometry mirrors the old in-flow layout (`px_3` row pad +
         // `w_10` gutter = CONTENT_X_REM) so text starts at the same x.
         let rem = window.rem_size();
@@ -279,7 +292,7 @@ impl Render for EditorView {
         let show_gutter = scroll_x <= px(0.5);
         // Bottom bar visibility, from last frame's prepaint — same staleness
         // contract as the existing vertical bar's `is_scrollable()` check.
-        let h_scrollable = can_h_scroll && self.h_handle.max_offset().x > px(0.);
+        let h_scrollable = can_h_scroll && base_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -291,7 +304,7 @@ impl Render for EditorView {
             selecting: self.selecting.clone(),
             drag_anchor: self.drag_anchor.clone(),
             last_head: self.last_head.clone(),
-            h_handle: self.h_handle.clone(),
+            h_handle: base_handle.clone(),
         };
 
         div()
@@ -323,7 +336,7 @@ impl Render for EditorView {
                 .size_full(),
             )
             .child({
-                let list = uniform_list(
+                let mut list = uniform_list(
                     "gpui-editor-lines",
                     visual_row_count,
                     cx.processor(move |this, range: Range<usize>, _window, cx| {
@@ -393,30 +406,24 @@ impl Render for EditorView {
                 .py_2()
                 .h(list_height);
 
+                if can_h_scroll {
+                    // Same hitbox/handle as the vertical scroll (see the
+                    // `base_handle` comment above) instead of a second
+                    // nested scrollable container, so gpui's own
+                    // axis-exclusivity logic sees the whole gesture in one
+                    // place. `restrict_scroll_to_axis` locks each individual
+                    // gesture to whichever axis it's predominantly moving
+                    // on, only turned on here (when h-scroll is actually
+                    // possible) so a normal file's vertical-only scrolling
+                    // is completely unaffected.
+                    list.interactivity().base_style.overflow.x = Some(Overflow::Scroll);
+                    list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
+                }
                 match content_width {
-                    // A line overflows the viewport: size the list to it and
-                    // nest in a horizontally-scrollable container.
-                    Some(w) => div()
-                        .id("gpui-editor-hscroll")
-                        // Both axes: with y unset, a vertical wheel gesture
-                        // over a fully-scrolled list would convert into
-                        // horizontal drift; with y set, vertical clamps at
-                        // zero (the child list is never taller than this
-                        // container). `restrict_scroll_to_axis` locks each
-                        // individual gesture to whichever axis it's
-                        // predominantly moving on, so a horizontal trackpad
-                        // swipe/drag can't bleed a few pixels of vertical
-                        // scroll (or vice versa) before the y clamp kicks in.
-                        .overflow_scroll()
-                        .restrict_scroll_to_axis()
-                        .track_scroll(&self.h_handle)
-                        .size_full()
-                        .child(list.w(w))
-                        .into_any_element(),
-                    // Nothing overflows: plain list, no h-scroll container
-                    // at all — this is the common case (most files, and any
-                    // file with wrap on) and should pay none of h-scroll's
-                    // extra layout/hit-testing cost.
+                    Some(w) => list.w(w).into_any_element(),
+                    // Nothing overflows: plain list, no h-scroll at all —
+                    // the common case (most files, and any file with wrap
+                    // on) pays none of h-scroll's extra cost.
                     None => list.w_full().into_any_element(),
                 }
             })
@@ -428,7 +435,7 @@ impl Render for EditorView {
             })
             .when(h_scrollable, |el| {
                 el.child(render_h_scrollbar(
-                    self.h_handle.clone(),
+                    base_handle.clone(),
                     self.h_thumb_dragging.clone(),
                     self.scroll_handle.is_scrollable(),
                 ))
@@ -436,11 +443,10 @@ impl Render for EditorView {
             .on_mouse_move({
                 let scroll_handle = self.scroll_handle.clone();
                 let thumb_dragging = self.thumb_dragging.clone();
-                let h_handle = self.h_handle.clone();
                 let h_thumb_dragging = self.h_thumb_dragging.clone();
                 move |event, window, _cx| {
+                    let base = scroll_handle.0.borrow().base_handle.clone();
                     if let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() {
-                        let base = scroll_handle.0.borrow().base_handle.clone();
                         let track_height = base.bounds().size.height;
                         let max_offset_y = base.max_offset().y;
                         let thumb_height = scrollbar_thumb_height(track_height, max_offset_y);
@@ -452,14 +458,14 @@ impl Render for EditorView {
                         window.refresh();
                     }
                     if let Some((start_mouse_x, start_offset_x)) = h_thumb_dragging.get() {
-                        let track_width = h_handle.bounds().size.width;
-                        let max_offset_x = h_handle.max_offset().x;
+                        let track_width = base.bounds().size.width;
+                        let max_offset_x = base.max_offset().x;
                         let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
                         let track_range = (track_width - thumb_width).max(px(1.));
                         let delta = event.position.x - start_mouse_x;
                         let new_offset_x = (start_offset_x - delta * (max_offset_x / track_range))
                             .clamp(-max_offset_x, px(0.));
-                        h_handle.set_offset(point(new_offset_x, h_handle.offset().y));
+                        base.set_offset(point(new_offset_x, base.offset().y));
                         window.refresh();
                     }
                 }

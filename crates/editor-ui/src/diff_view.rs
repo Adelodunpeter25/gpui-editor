@@ -165,10 +165,6 @@ pub struct DiffView {
     /// view has no mouse-driven selection, so unlike `EditorView` this
     /// cache is never used for hit-testing).
     char_width: Rc<RefCell<Option<(FontConfig, Pixels)>>>,
-    /// Horizontal scroll state for the wrap-off path (same nesting as
-    /// `EditorView`: the `uniform_list` scrolls vertically inside an
-    /// `overflow_scroll` div tracked by this handle).
-    h_handle: ScrollHandle,
     h_thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
     /// Cached widest-line text width: `(diff version, font, max px)`.
     content_width_cache: Rc<RefCell<Option<(u64, FontConfig, Pixels)>>>,
@@ -184,7 +180,6 @@ impl DiffView {
             thumb_dragging: Rc::new(Cell::new(None)),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
             char_width: Rc::new(RefCell::new(None)),
-            h_handle: ScrollHandle::new(),
             h_thumb_dragging: Rc::new(Cell::new(None)),
             content_width_cache: Rc::new(RefCell::new(None)),
         }
@@ -402,20 +397,26 @@ impl Render for DiffView {
         let gutter_pad = rem * 0.5;
         let gutter_block_w = rem * 5.0;
         let content_ml = rem * 5.5;
+        // Same handle as the vertical scroll's `base_handle`, not a second
+        // nested scrollable container — see `EditorView::render`'s comment
+        // on why (avoids gpui dispatching the same wheel gesture to two
+        // independent scroll regions, which is what let horizontal-swipe
+        // noise leak into vertical scroll).
+        let base_handle = self.scroll_handle.0.borrow().base_handle.clone();
         // Only earn the horizontal-scroll layout when a line actually
         // overflows the viewport — see `EditorView`'s identical gate.
         let can_h_scroll = !wrap_enabled && content_ml + max_text_px > measured_width;
         if !can_h_scroll {
-            let y = self.h_handle.offset().y;
-            self.h_handle.set_offset(point(px(0.), y));
+            let y = base_handle.offset().y;
+            base_handle.set_offset(point(px(0.), y));
         }
         const H_TRAILING_PAD: Pixels = px(64.0);
         let content_width = can_h_scroll.then(|| content_ml + max_text_px + H_TRAILING_PAD);
-        let scroll_x = (-self.h_handle.offset().x).max(px(0.));
+        let scroll_x = (-base_handle.offset().x).max(px(0.));
         // Hidden once scrolled right at all, instead of pinned in place —
         // see `EditorView`'s identical `show_gutter`.
         let show_gutter = scroll_x <= px(0.5);
-        let h_scrollable = can_h_scroll && self.h_handle.max_offset().x > px(0.);
+        let h_scrollable = can_h_scroll && base_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
@@ -439,7 +440,7 @@ impl Render for DiffView {
                 .size_full(),
             )
             .child({
-                let list = uniform_list(
+                let mut list = uniform_list(
                     "gpui-diff-lines",
                     visual_rows,
                     cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
@@ -481,19 +482,15 @@ impl Render for DiffView {
                 .text_sm()
                 .h(list_height);
 
+                if can_h_scroll {
+                    // Only turned on when h-scroll is actually possible, so
+                    // a normal file's vertical-only scrolling is completely
+                    // unaffected — see `EditorView::render`'s comment.
+                    list.interactivity().base_style.overflow.x = Some(Overflow::Scroll);
+                    list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
+                }
                 match content_width {
-                    Some(w) => div()
-                        .id("gpui-diff-hscroll")
-                        // Both axes set + axis-restricted (see
-                        // `EditorView`): vertical clamps at zero, and each
-                        // gesture locks to whichever axis it's moving on so
-                        // scroll never bleeds cross-axis.
-                        .overflow_scroll()
-                        .restrict_scroll_to_axis()
-                        .track_scroll(&self.h_handle)
-                        .size_full()
-                        .child(list.w(w))
-                        .into_any_element(),
+                    Some(w) => list.w(w).into_any_element(),
                     None => list.w_full().into_any_element(),
                 }
             })
@@ -505,7 +502,7 @@ impl Render for DiffView {
             })
             .when(h_scrollable, |el| {
                 el.child(render_h_scrollbar(
-                    self.h_handle.clone(),
+                    base_handle.clone(),
                     self.h_thumb_dragging.clone(),
                     self.scroll_handle.is_scrollable(),
                 ))
@@ -513,11 +510,10 @@ impl Render for DiffView {
             .on_mouse_move({
                 let scroll_handle = self.scroll_handle.clone();
                 let thumb_dragging = self.thumb_dragging.clone();
-                let h_handle = self.h_handle.clone();
                 let h_thumb_dragging = self.h_thumb_dragging.clone();
                 move |event, window, _cx| {
+                    let base = scroll_handle.0.borrow().base_handle.clone();
                     if let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() {
-                        let base = scroll_handle.0.borrow().base_handle.clone();
                         let track_height = base.bounds().size.height;
                         let max_offset_y = base.max_offset().y;
                         let thumb_height = crate::scrollbar_thumb_height(track_height, max_offset_y);
@@ -529,14 +525,14 @@ impl Render for DiffView {
                         window.refresh();
                     }
                     if let Some((start_mouse_x, start_offset_x)) = h_thumb_dragging.get() {
-                        let track_width = h_handle.bounds().size.width;
-                        let max_offset_x = h_handle.max_offset().x;
+                        let track_width = base.bounds().size.width;
+                        let max_offset_x = base.max_offset().x;
                         let thumb_width = scrollbar_thumb_size(track_width, max_offset_x);
                         let track_range = (track_width - thumb_width).max(px(1.));
                         let delta = event.position.x - start_mouse_x;
                         let new_offset_x = (start_offset_x - delta * (max_offset_x / track_range))
                             .clamp(-max_offset_x, px(0.));
-                        h_handle.set_offset(point(new_offset_x, h_handle.offset().y));
+                        base.set_offset(point(new_offset_x, base.offset().y));
                         window.refresh();
                     }
                 }
