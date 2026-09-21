@@ -1,10 +1,41 @@
 # todo.md
 
-Editor roadmap in dependency order — each item needs the one above it.
-The goal: edit code inside the desktop app without leaving for an external
-editor. The viewer (what ships today) keeps working exactly as-is throughout.
+Editor roadmap, ordered by what to build first. Vim (3) needs edit mode (2);
+gutter annotate (1) is independent viewer work — smallest win first, no
+editing required. The goal stays: work in code inside the desktop app
+without leaving for an external editor. The viewer (what ships today) keeps
+working exactly as-is throughout.
 
-## 1. Edit mode
+## 1. Gutter annotate — `+` comment for the AI
+
+GitHub's code-review pattern applied to "send this code to the AI with a
+note": hover the gutter, get a `+`, pick a range, type the comment. Pure
+viewer work — annotation never touches the buffer, so it neither blocks nor
+waits on items 2–3, and readonly stays readonly.
+
+- Hover a row's line-number gutter → a `+` chip appears in it. It rides the
+  row, so it scrolls away with h-scroll exactly like the line numbers do —
+  fine for v1, keyboard alternative later
+- Click `+` with a text selection → annotate that selection (the selection
+  *is* the range; show a `LINES 3–20`-style label). No selection → current
+  line
+- Highlight the range full-width while composing — same paint path as the
+  existing selection and diff row backgrounds
+- Composer is a floating overlay anchored under the range's last line, NOT
+  an inserted row: `uniform_list` requires uniform row heights, so pushing
+  lines down the way GitHub does would break virtualization. Anchor to the
+  row's on-screen position; handle scroll-away/unmount while it's open
+- Esc cancels, Enter submits (`↵` hint on the button)
+- After posting, leave a persistent marker on the range (GitHub's line
+  badge equivalent)
+- Ownership split: hover/`+`/range-highlight/anchor+focus mechanics live in
+  editor-ui as generic primitives — the editor crate must not know "AI"
+  exists; the composer content (textarea, send-to-AI, persistence) lives in
+  console, which already has gpui-component input and the AI plumbing
+- Deliberately deferred: reply threads, several composers per file,
+  range-adjust arrows, a keyboard "+ at cursor" shortcut
+
+## 2. Edit mode
 
 The editor is a readonly viewer today: `Mode::Editable` exists as a reserved
 variant but nothing implements it — no key ever reaches the buffer (only
@@ -25,7 +56,7 @@ selection, copy, and select-all are wired), and there is no visible caret.
 - Cut a release rev when green (the desktop app consumes the editor by
   pinned rev, not path)
 
-## 2. Vim mode — minimal Normal/Insert
+## 3. Vim mode — minimal Normal/Insert
 
 Only after edit mode: vim mode needs a buffer that can actually take input.
 Exactly the toggle, nothing else:
@@ -39,8 +70,9 @@ Exactly the toggle, nothing else:
 Later, once the toggle is solid: motions (`h j k l`, `w`/`b`, `0`/`$`),
 visual mode, counts, and operators (`d`/`c`/`y`).
 
-## 3. Ship to the desktop app
+## 4. Ship to the desktop app
 
-- Bump the `editor-ui` pin in `console` to the rev containing 1–2
+- Each feature ships the same way: bump the `editor-ui` pin in `console` to
+  the rev containing it
 - The diff view stays readonly — editing diffs is explicitly out of scope
   until real diff-editing exists
