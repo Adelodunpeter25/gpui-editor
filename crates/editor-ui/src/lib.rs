@@ -388,6 +388,7 @@ impl Render for EditorView {
                                     gutter_pad,
                                     gutter_w,
                                     show_gutter,
+                                    row_width: content_width,
                                 };
                                 render_line(
                                     meta,
@@ -407,25 +408,48 @@ impl Render for EditorView {
                 .h(list_height);
 
                 if can_h_scroll {
-                    // Same hitbox/handle as the vertical scroll (see the
-                    // `base_handle` comment above) instead of a second
-                    // nested scrollable container, so gpui's own
-                    // axis-exclusivity logic sees the whole gesture in one
-                    // place. `restrict_scroll_to_axis` locks each individual
-                    // gesture to whichever axis it's predominantly moving
-                    // on, only turned on here (when h-scroll is actually
-                    // possible) so a normal file's vertical-only scrolling
-                    // is completely unaffected.
-                    list.interactivity().base_style.overflow.x = Some(Overflow::Scroll);
+                    // `Unconstrained` — not just poking `overflow.x` — is
+                    // load-bearing. It's what tells `uniform_list` to measure
+                    // a row for its *content* width instead of deriving
+                    // content from the list's own bounds. The list is
+                    // viewport-width (the `w_full()` below, with rows
+                    // carrying the content width instead — see
+                    // `RowMeta::row_width`), so without this gpui computes a
+                    // horizontal scroll range of exactly zero and its
+                    // per-frame clamp forces the wheel-driven x offset back
+                    // to 0 *after* this view has already re-rendered with
+                    // it: render saw the transient offset and hid the
+                    // gutter, while the painted rows never move (clamp runs
+                    // in prepaint, before painting) and the h-scrollbar
+                    // never appears (`max_offset().x` stays 0) — the exact
+                    // "line numbers vanish instead of scrolling" regression.
+                    // The method also sets `overflow.x = Scroll`, the flag
+                    // the wheel listener needs to accept x deltas at all.
+                    //
+                    // `restrict_scroll_to_axis` is poked rather than
+                    // chained because it's a `StatefulInteractiveElement`
+                    // method, which `UniformList` doesn't implement. Both
+                    // are only turned on when h-scroll is actually
+                    // possible, so a normal file's vertical-only scrolling
+                    // is completely unaffected: each gesture locks to
+                    // whichever axis it's predominantly moving on, on the
+                    // one handle/listener pair (see the `base_handle`
+                    // comment above), so a trackpad swipe can't bleed its
+                    // cross-axis residue into vertical scroll.
+                    list = list.with_horizontal_sizing_behavior(
+                        ListHorizontalSizingBehavior::Unconstrained,
+                    );
                     list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
                 }
-                match content_width {
-                    Some(w) => list.w(w).into_any_element(),
-                    // Nothing overflows: plain list, no h-scroll at all —
-                    // the common case (most files, and any file with wrap
-                    // on) pays none of h-scroll's extra cost.
-                    None => list.w_full().into_any_element(),
-                }
+                // Always viewport-width: these are the scroll *bounds* gpui
+                // clamps against, so `content_width` (measured from the
+                // explicitly-sized rows above) minus these bounds is the
+                // real horizontal scroll range. They're also the mask rows
+                // paint through, so long lines clip at the viewport edge
+                // instead of bleeding past it. `None` (no overflowing line,
+                // or wrap on) is the common case and pays none of h-scroll's
+                // extra cost.
+                list.w_full().into_any_element()
             })
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
@@ -543,8 +567,10 @@ pub(crate) fn render_scrollbar(
 }
 
 /// Bottom scrollbar for the wrap-off horizontal range. Mirrors
-/// `render_scrollbar` on the x axis; driven by the outer `overflow_scroll`
-/// div's `ScrollHandle` rather than the vertical `uniform_list` handle.
+/// `render_scrollbar` on the x axis; driven by the `uniform_list`'s own
+/// `base_handle` — the same handle vertical scroll rides on (and the same
+/// one rows read for hit-testing), so the thumb always agrees with what's
+/// painted.
 pub(crate) fn render_h_scrollbar(
     scroll_handle: ScrollHandle,
     thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
@@ -643,6 +669,18 @@ struct RowMeta {
     /// aren't useful, so the gutter just hides rather than staying pinned
     /// over sliding text.
     show_gutter: bool,
+    /// `Some(content width)` while h-scroll is active (the `content_width`
+    /// local in `Render`), `None` otherwise. The list itself is
+    /// *viewport*-width when h-scrolling (see `Render`'s comment on why —
+    /// gpui clamps the scroll offset against the scroll container's own
+    /// bounds, so a content-width list has zero horizontal scroll range),
+    /// so each row states its full content width explicitly instead of
+    /// stretching to fill the list. That keeps row layout byte-for-byte
+    /// what it was when the list *was* content-width: text laid out once at
+    /// its real width (never re-wrapped at the viewport edge), and the
+    /// width gpui measures for its scroll range matches `content_width`,
+    /// trailing pad included.
+    row_width: Option<Pixels>,
 }
 
 fn render_line(
@@ -662,6 +700,7 @@ fn render_line(
         gutter_pad,
         gutter_w,
         show_gutter,
+        row_width,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -682,14 +721,21 @@ fn render_line(
     let move_font = font.clone();
     let move_text = Rc::new(text.clone());
 
-    div()
+    let row_el = div()
         .id(("editor-line", row as usize))
         .relative()
         .flex()
         .flex_row()
         .items_center()
-        .w_full()
-        .h(line_height)
+        .h(line_height);
+    // While h-scrolling, the row outgrows the (viewport-width) list on
+    // purpose — see `RowMeta::row_width`. Otherwise it stretches to the
+    // list as always.
+    let row_el = match row_width {
+        Some(w) => row_el.w(w),
+        None => row_el.w_full(),
+    };
+    row_el
         .font_family(font.family.clone())
         .text_size(font.size)
         .child(

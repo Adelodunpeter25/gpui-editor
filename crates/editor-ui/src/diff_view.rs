@@ -204,6 +204,13 @@ struct DiffRowMeta {
     content_ml: Pixels,
     /// False once scrolled right at all — see `EditorView`'s `show_gutter`.
     show_gutter: bool,
+    /// `Some(content width)` while h-scrolling: the list is viewport-width
+    /// then (gpui clamps the scroll offset against the scroll container's
+    /// own bounds, so a content-width list would have zero horizontal range
+    /// — see `EditorView::render` and `RowMeta::row_width` for the full
+    /// explanation), so the row states its content width explicitly and
+    /// keeps the layout it had when the list was content-width.
+    row_width: Option<Pixels>,
 }
 
 fn render_diff_line(
@@ -221,6 +228,7 @@ fn render_diff_line(
         gutter_block_w,
         content_ml,
         show_gutter,
+        row_width,
     } = meta;
     // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
     // instead (matches how GitHub/most PR diff views do it), so `marker`
@@ -255,13 +263,20 @@ fn render_diff_line(
         })
         .collect();
 
-    let mut row = div()
+    let row = div()
         .relative()
         .flex()
         .flex_row()
         .items_center()
-        .w_full()
-        .h(font.line_height)
+        .h(font.line_height);
+    // While h-scrolling, the row outgrows the (viewport-width) list on
+    // purpose — see `DiffRowMeta::row_width`. Otherwise it stretches to
+    // the list as always.
+    let row = match row_width {
+        Some(w) => row.w(w),
+        None => row.w_full(),
+    };
+    let mut row = row
         .font_family(font.family.clone())
         .text_size(font.size)
         // Colored left-edge bar for a changed row; invisible (matching
@@ -472,6 +487,7 @@ impl Render for DiffView {
                                         gutter_block_w,
                                         content_ml,
                                         show_gutter,
+                                        row_width: content_width,
                                     },
                                 )
                             })
@@ -483,16 +499,23 @@ impl Render for DiffView {
                 .h(list_height);
 
                 if can_h_scroll {
-                    // Only turned on when h-scroll is actually possible, so
-                    // a normal file's vertical-only scrolling is completely
-                    // unaffected — see `EditorView::render`'s comment.
-                    list.interactivity().base_style.overflow.x = Some(Overflow::Scroll);
+                    // `Unconstrained` (which also sets `overflow.x`) is what
+                    // gives gpui a non-zero horizontal scroll range to clamp
+                    // against; `restrict_scroll_to_axis` (poked — it's a
+                    // `StatefulInteractiveElement` method `UniformList`
+                    // doesn't implement) locks each gesture to its axis.
+                    // Both only when h-scroll is possible — see the
+                    // identical (and much more detailed) block in
+                    // `EditorView::render`.
+                    list = list.with_horizontal_sizing_behavior(
+                        ListHorizontalSizingBehavior::Unconstrained,
+                    );
                     list.interactivity().base_style.restrict_scroll_to_axis = Some(true);
                 }
-                match content_width {
-                    Some(w) => list.w(w).into_any_element(),
-                    None => list.w_full().into_any_element(),
-                }
+                // Always viewport-width — the scroll bounds gpui clamps
+                // against, and the mask rows paint through; the rows
+                // themselves carry `content_width` (see `row_width`).
+                list.w_full().into_any_element()
             })
             .when(self.scroll_handle.is_scrollable(), |el| {
                 el.child(render_scrollbar(
