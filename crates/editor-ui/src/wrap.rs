@@ -1,8 +1,8 @@
 //! Word wrap: row <-> visual-row mapping.
 //!
 //! Render-time concern (needs a `Window`/text system to measure glyph
-//! widths), so it lives on `EditorView`, not the GPUI-free `EditorState`
-//! (`types.rs`). Kept in its own module rather than folded into `types.rs`
+//! widths), so it lives with `EditorView` (`view.rs`), not the model
+//! (`state.rs`). Kept in its own module rather than folded into either one
 //! or `lib.rs` since it's a distinct, self-contained algorithm — one more
 //! thing to keep track of if merged into an already-busy file.
 //!

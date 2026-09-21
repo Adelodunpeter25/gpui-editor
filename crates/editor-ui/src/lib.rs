@@ -3,11 +3,14 @@
 //! M0: readonly viewer + optional single-cursor edit stub.
 //! State lives in `Entity<EditorState>`; view holds the handle only.
 //! `edit-buffer` and `syntax` stay GPUI-free so the host app can reuse them
-//! headless. Model/view types live in `types.rs`, word-wrap in `wrap.rs`;
-//! this file holds the `Render` impl and its paint helpers.
+//! headless. Plain types live in `types.rs`, the model in `state.rs`, the
+//! view handle in `view.rs`, word-wrap in `wrap.rs`; this file holds the
+//! `Render` impl and its paint helpers.
 
 mod diff_view;
+mod state;
 mod types;
+mod view;
 mod wrap;
 
 use edit_buffer::Point;
@@ -17,12 +20,15 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 use syntax::Capture;
-use types::{RowInteraction, StyledSpan};
+use types::StyledSpan;
+use view::RowInteraction;
 use wrap::{clip_to_subrange, WrapCache};
 
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use diff_view::{DiffState, DiffView};
-pub use types::{EditorState, EditorView, FontConfig, IndentOptions, Mode, SearchState, Selection};
+pub use state::EditorState;
+pub use types::{FontConfig, IndentOptions, Mode, SearchState, Selection};
+pub use view::EditorView;
 
 // ---------------------------------------------------------------------------
 // Actions + view rendering
