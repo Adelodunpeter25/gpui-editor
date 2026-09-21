@@ -202,8 +202,6 @@ struct DiffRowMeta {
     gutter_pad: Pixels,
     gutter_block_w: Pixels,
     content_ml: Pixels,
-    /// False once scrolled right at all — see `EditorView`'s `show_gutter`.
-    show_gutter: bool,
     /// `Some(content width)` while h-scrolling: the list is viewport-width
     /// then (gpui clamps the scroll offset against the scroll container's
     /// own bounds, so a content-width list would have zero horizontal range
@@ -227,7 +225,6 @@ fn render_diff_line(
         gutter_pad,
         gutter_block_w,
         content_ml,
-        show_gutter,
         row_width,
     } = meta;
     // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
@@ -282,8 +279,8 @@ fn render_diff_line(
         // Colored left-edge bar for a changed row; invisible (matching
         // border width reserved either way, so layout doesn't shift
         // between changed/context rows) when there's no marker color.
-        // Lives at the row's scrolled edge (not in the frozen gutter), so
-        // it slides away with content — the numbers stay, the bar doesn't.
+        // Lives at the row's own left edge: under h-scroll it slides out
+        // with the row like everything else, clipped by the container.
         .border_l_4()
         .border_color(marker.unwrap_or(transparent_black().into()));
     if let Some(bg) = bg {
@@ -310,38 +307,38 @@ fn render_diff_line(
             .pl(indent_px)
             .child(render_spans(sub_text, runs, None)),
     )
-    // Gutter block (both number columns): hidden once scrolled right at
-    // all, same as `EditorView`'s row gutter, instead of pinned in place.
-    .when(show_gutter, |el| {
-        el.child(
-            div()
-                .absolute()
-                .left(gutter_pad)
-                .top_0()
-                .w(gutter_block_w)
-                .h_full()
-                .bg(Hsla::black())
-                .flex()
-                .flex_row()
-                .child(
-                    div()
-                        .w_10()
-                        .flex_shrink_0()
-                        .text_color(rgb(0x585b70))
-                        .child(old_label),
-                )
-                .child(
-                    div()
-                        .w_10()
-                        .h_full()
-                        .flex_shrink_0()
-                        .border_r_2()
-                        .border_color(rgba(0xffffff1a))
-                        .text_color(rgb(0x585b70))
-                        .child(new_label),
-                ),
-        )
-    })
+    // Gutter block (both number columns): plain row content, same as
+    // `EditorView`'s gutter — it rides the row's horizontal translation
+    // and the container's left edge clips it as it scrolls out of view
+    // (no conditional unmount, no pinned overlay).
+    .child(
+        div()
+            .absolute()
+            .left(gutter_pad)
+            .top_0()
+            .w(gutter_block_w)
+            .h_full()
+            .bg(Hsla::black())
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .w_10()
+                    .flex_shrink_0()
+                    .text_color(rgb(0x585b70))
+                    .child(old_label),
+            )
+            .child(
+                div()
+                    .w_10()
+                    .h_full()
+                    .flex_shrink_0()
+                    .border_r_2()
+                    .border_color(rgba(0xffffff1a))
+                    .text_color(rgb(0x585b70))
+                    .child(new_label),
+            ),
+    )
 }
 
 impl Render for DiffView {
@@ -427,10 +424,6 @@ impl Render for DiffView {
         }
         const H_TRAILING_PAD: Pixels = px(64.0);
         let content_width = can_h_scroll.then(|| content_ml + max_text_px + H_TRAILING_PAD);
-        let scroll_x = (-base_handle.offset().x).max(px(0.));
-        // Hidden once scrolled right at all, instead of pinned in place —
-        // see `EditorView`'s identical `show_gutter`.
-        let show_gutter = scroll_x <= px(0.5);
         let h_scrollable = can_h_scroll && base_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
@@ -486,7 +479,6 @@ impl Render for DiffView {
                                         gutter_pad,
                                         gutter_block_w,
                                         content_ml,
-                                        show_gutter,
                                         row_width: content_width,
                                     },
                                 )

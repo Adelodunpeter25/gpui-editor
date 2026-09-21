@@ -275,21 +275,19 @@ impl Render for EditorView {
         const H_TRAILING_PAD: Pixels = px(64.0);
         let content_width = can_h_scroll.then(|| content_x + max_text_px + H_TRAILING_PAD);
 
-        // Render-time horizontal shift. Scrolling notifies this view (GPUI
-        // re-renders on scroll-offset change), so this stays live frame to
-        // frame.
-        let scroll_x = (-base_handle.offset().x).max(px(0.));
         // Gutter geometry mirrors the old in-flow layout (`px_3` row pad +
         // `w_10` gutter = CONTENT_X_REM) so text starts at the same x.
         let rem = window.rem_size();
         let gutter_pad = rem * 0.75;
         let gutter_w = rem * 2.5;
-        // Rather than pin the gutter in place while text slides under it,
-        // hide it entirely once the user has scrolled right at all — line
-        // numbers for rows whose start is off-screen to the left aren't
-        // useful pinned in place anyway, and this avoids an absolute-
-        // position-plus-opaque-background overlay hack just to fake it.
-        let show_gutter = scroll_x <= px(0.5);
+        // The gutter is plain row content — it stays mounted and rides the
+        // row's translation as the container scrolls right, so the
+        // container's own left edge clips it naturally as it walks out of
+        // view. No conditional unmount (which read as the line numbers
+        // "vanishing" at the first scrolled pixel) and no overlay pinned
+        // over sliding text: the whole row scrolls as one unit. Render
+        // doesn't read the scroll offset for this — the rows' own
+        // hit-testers read it live via `h_handle`.
         // Bottom bar visibility, from last frame's prepaint — same staleness
         // contract as the existing vertical bar's `is_scrollable()` check.
         let h_scrollable = can_h_scroll && base_handle.max_offset().x > px(0.);
@@ -387,7 +385,6 @@ impl Render for EditorView {
                                     indent_px,
                                     gutter_pad,
                                     gutter_w,
-                                    show_gutter,
                                     row_width: content_width,
                                 };
                                 render_line(
@@ -416,13 +413,12 @@ impl Render for EditorView {
                     // carrying the content width instead — see
                     // `RowMeta::row_width`), so without this gpui computes a
                     // horizontal scroll range of exactly zero and its
-                    // per-frame clamp forces the wheel-driven x offset back
-                    // to 0 *after* this view has already re-rendered with
-                    // it: render saw the transient offset and hid the
-                    // gutter, while the painted rows never move (clamp runs
-                    // in prepaint, before painting) and the h-scrollbar
-                    // never appears (`max_offset().x` stays 0) — the exact
-                    // "line numbers vanish instead of scrolling" regression.
+                    // per-frame clamp (prepaint, before anything paints)
+                    // forces every wheel-driven x offset straight back to 0:
+                    // a horizontal gesture reads as input but moves nothing,
+                    // and the h-scrollbar never appears (`max_offset().x`
+                    // stays 0) — the "horizontal scroll doesn't work"
+                    // regression this replaced.
                     // The method also sets `overflow.x = Scroll`, the flag
                     // the wheel listener needs to accept x deltas at all.
                     //
@@ -657,18 +653,13 @@ struct RowMeta {
     /// under its own indent instead of restarting at column 0. `0` for a
     /// row's first sub-line.
     indent_px: Pixels,
-    /// Gutter's left edge in row-local (unscrolled) coordinates — constant,
-    /// since the gutter is only ever shown at (or near) zero horizontal
-    /// scroll (see `show_gutter`).
+    /// Gutter's left edge in row-local coordinates — moves with the row
+    /// under h-scroll like everything else (the container clips it, the
+    /// gutter isn't pinned or hidden).
     gutter_pad: Pixels,
     /// Gutter width (`w_10`); text starts at `gutter_pad + gutter_w + gap`
     /// = `content_x` in row coordinates.
     gutter_w: Pixels,
-    /// False once the row's horizontal scroll container has been scrolled
-    /// right at all — line numbers for a row whose start is off-screen
-    /// aren't useful, so the gutter just hides rather than staying pinned
-    /// over sliding text.
-    show_gutter: bool,
     /// `Some(content width)` while h-scroll is active (the `content_width`
     /// local in `Render`), `None` otherwise. The list itself is
     /// *viewport*-width when h-scrolling (see `Render`'s comment on why —
@@ -699,7 +690,6 @@ fn render_line(
         indent_px,
         gutter_pad,
         gutter_w,
-        show_gutter,
         row_width,
     } = meta;
     let line_no = if show_line_number {
@@ -792,25 +782,25 @@ fn render_line(
                     move_.last_head.set(Some(head));
                 }),
         )
-        // Gutter: hidden once the row is scrolled right at all (see
-        // `show_gutter`'s doc comment) rather than pinned in place over
-        // sliding text. Opaque background covers text sliding underneath
-        // while shown; painted after content so it wins the overlap.
-        .when(show_gutter, |el| {
-            el.child(
-                div()
-                    .absolute()
-                    .left(gutter_pad)
-                    .top_0()
-                    .w(gutter_w)
-                    .h_full()
-                    .bg(Hsla::black())
-                    .border_r_2()
-                    .border_color(rgba(0xffffff1a))
-                    .text_color(rgb(0x585b70))
-                    .child(line_no),
-            )
-        })
+        // Gutter: plain row content — it rides the row's horizontal
+        // translation and the container's left edge clips it as it scrolls
+        // out of view (no conditional unmount, no pinned overlay). Opaque
+        // background keeps the number column a clean block over the
+        // editor's black; painted after content so its right border rule
+        // always wins the seam.
+        .child(
+            div()
+                .absolute()
+                .left(gutter_pad)
+                .top_0()
+                .w(gutter_w)
+                .h_full()
+                .bg(Hsla::black())
+                .border_r_2()
+                .border_color(rgba(0xffffff1a))
+                .text_color(rgb(0x585b70))
+                .child(line_no),
+        )
 }
 
 pub(crate) fn render_spans(
