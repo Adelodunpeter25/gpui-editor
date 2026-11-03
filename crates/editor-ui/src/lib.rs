@@ -752,6 +752,17 @@ fn render_line(
         String::new()
     };
     let line_height = font.line_height;
+    // Use the active syntax run as the accent source so comment selection
+    // remains legible across the configured syntax themes without introducing
+    // a second hard-coded editor palette.
+    let comment_accent = runs
+        .first()
+        .map(|(_, color)| color.opacity(0.28))
+        .unwrap_or_else(|| color_for(Capture::Keyword).opacity(0.28));
+    let comment_chip = runs
+        .first()
+        .map(|(_, color)| color.opacity(0.95))
+        .unwrap_or_else(|| color_for(Capture::Keyword));
     // Continuation sub-lines are left-padded by `indent_px` so a wrapped
     // line visually aligns under its own indent (see `WrapCache::rebuild`);
     // hit-testing has to account for that same offset or clicks would land
@@ -784,7 +795,7 @@ fn render_line(
             && comment_drag
                 .zip(comment_hover_row)
                 .is_some_and(|(a, b)| row >= a.min(b) && row <= a.max(b)),
-        |el| el.bg(rgba(0x3b82f633)),
+        |el| el.bg(comment_accent),
     );
     row_el
         .font_family(font.family.clone())
@@ -792,8 +803,17 @@ fn render_line(
         .on_mouse_move({
             let interaction = interaction.clone();
             move |_event, window, _cx| {
-                if comment_enabled && interaction.comment_drag.get().is_some() {
+                if comment_enabled && interaction.comment_hover_row.get() != Some(row) {
                     interaction.comment_hover_row.set(Some(row));
+                    window.refresh();
+                }
+            }
+        })
+        .on_mouse_exit({
+            let interaction = interaction.clone();
+            move |_event, window, _cx| {
+                if interaction.comment_drag.get().is_none() {
+                    interaction.comment_hover_row.set(None);
                     window.refresh();
                 }
             }
@@ -878,17 +898,6 @@ fn render_line(
                         window.refresh();
                     }
                 })
-                .child(
-                    if comment_enabled
-                        && (comment_hover_row == Some(row) || comment_drag == Some(row))
-                    {
-                        "+"
-                    } else {
-                        ""
-                    },
-                )
-                .text_size(px(18.0))
-                .font_weight(FontWeight::BOLD)
                 .left(gutter_pad)
                 .top_0()
                 .w(gutter_w)
@@ -896,8 +905,47 @@ fn render_line(
                 .bg(Hsla::black())
                 .border_r_2()
                 .border_color(rgba(0xffffff1a))
+                .flex()
+                .items_center()
+                .justify_end()
+                .pr_1()
                 .text_color(rgb(0x585b70))
-                .child(line_no),
+                .child(line_no)
+                .when(
+                    comment_enabled
+                        && (comment_hover_row == Some(row) || comment_drag == Some(row)),
+                    |el| {
+                        el.child(
+                            div()
+                                .id(("comment-plus", row as usize))
+                                .absolute()
+                                .left(px(-4.0))
+                                .top(px(2.0))
+                                .w(px(24.0))
+                                .h(px(24.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .bg(comment_chip)
+                                .text_color(Hsla::black())
+                                .text_size(px(20.0))
+                                .font_weight(FontWeight::BOLD)
+                                .child("+"),
+                        )
+                    },
+                )
+                .on_mouse_down(MouseButton::Left, {
+                    let drag = interaction.comment_drag.clone();
+                    let hover = interaction.comment_hover_row.clone();
+                    let selecting = interaction.selecting.clone();
+                    move |_event, window, _cx| {
+                        selecting.set(false);
+                        hover.set(Some(row));
+                        drag.set(Some(row));
+                        window.refresh();
+                    }
+                }),
         )
 }
 

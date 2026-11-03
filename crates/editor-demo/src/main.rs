@@ -265,10 +265,11 @@ impl Render for DemoApp {
                         .border_1()
                         .border_color(rgb(0x89b4fa))
                         .text_color(rgb(0xcdd6f4))
-                        .child(format!(
-                            "Comment on lines {}–{}",
-                            target.start_line, target.end_line
-                        ))
+                        .child(if target.start_line == target.end_line {
+                            format!("Comment on line {}", target.start_line)
+                        } else {
+                            format!("Comment on lines {}–{}", target.start_line, target.end_line)
+                        })
                         .child(
                             div()
                                 .mt_2()
