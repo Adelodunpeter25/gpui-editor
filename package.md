@@ -137,7 +137,40 @@ fully-implemented mode today — `EditorState::editable()` exists but there's
 no cursor/input handling wired up in `EditorView` yet (see
 `implementation.md` §7).
 
-## 5. Update the editor from outside (e.g. your own "open file" flow)
+## 5. Comment gutter annotations
+
+The file-view path has an opt-in gutter annotation primitive for review and
+AI-comment flows. It is disabled by default, works in readonly mode, and is
+automatically disabled while word wrap is enabled because the unwrapped
+row-to-screen mapping is required for accurate range selection.
+
+```rust
+use editor_ui::{CommentTarget, EditorState};
+
+state.update(cx, |editor, cx| {
+    editor.set_comment_gutter(true, cx);
+    editor.set_comment_target_handler(Some(Box::new(|target: CommentTarget| {
+        // Open your host app's comment composer for this range.
+        // Lines are 1-based and inclusive.
+        println!("comment on lines {}–{}", target.start_line, target.end_line);
+    })));
+});
+```
+
+The builder form is also available when constructing state:
+
+```rust
+let state = cx.new(|_| {
+    EditorState::readonly(source_text, language).with_comment_gutter(true)
+});
+```
+
+Hover a line-number gutter to reveal the `+` chip. Press and drag from it to
+select a contiguous range; releasing invokes the callback once with the final
+`CommentTarget`. Escape cancels an in-progress drag. The editor does not own
+or render the host comment composer—the callback is the integration seam.
+
+## 6. Update the editor from outside (e.g. your own "open file" flow)
 
 ```rust
 state.update(cx, |editor, cx| {
@@ -156,7 +189,7 @@ large file doesn't stall the window while it parses (see
 `implementation.md` §6). If your code still has `|editor, _cx|`, rename it
 to `|editor, cx|` and pass `cx` through.
 
-## 6. Optional: theme and word wrap
+## 7. Optional: theme and word wrap
 
 ```rust
 state.update(cx, |editor, cx| {
