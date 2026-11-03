@@ -122,8 +122,8 @@ impl WrapCache {
                         text.chars().take_while(|c| *c == ' ' || *c == '\t').count() as u32;
                     // Cap so indent can never consume the whole wrap width;
                     // always leave room for at least one content char.
-                    let max_indent = ((width / char_width).floor().max(0.) as u32)
-                        .saturating_sub(1);
+                    let max_indent =
+                        ((width / char_width).floor().max(0.) as u32).saturating_sub(1);
                     let indent_chars = indent_char_count.min(max_indent);
                     let indent_px = char_width * (indent_chars as f32);
                     let content_width = (width - indent_px).max(char_width);
@@ -166,7 +166,10 @@ impl WrapCache {
     /// be left-padded by. Always `0` for a row's first sub-line (it already
     /// renders the real indent as ordinary leading text).
     pub(crate) fn indent_chars(&self, row: u32) -> u32 {
-        self.row_indent_chars.get(row as usize).copied().unwrap_or(0)
+        self.row_indent_chars
+            .get(row as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub(crate) fn visual_row_count(&self) -> usize {
@@ -196,7 +199,10 @@ impl WrapCache {
 /// Clip `range` to `sub_range`, rebasing the result to be relative to
 /// `sub_range.start`. Shared by syntax runs and selection when slicing a
 /// buffer row's row-local ranges down to one wrapped visual sub-line.
-pub(crate) fn clip_to_subrange(range: &Range<usize>, sub_range: &Range<usize>) -> Option<Range<usize>> {
+pub(crate) fn clip_to_subrange(
+    range: &Range<usize>,
+    sub_range: &Range<usize>,
+) -> Option<Range<usize>> {
     let lo = range.start.max(sub_range.start);
     let hi = range.end.min(sub_range.end);
     if lo < hi {

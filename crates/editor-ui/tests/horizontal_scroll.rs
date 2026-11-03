@@ -57,5 +57,8 @@ fn scrollbar_thumb_shrinks_with_content() {
 
 #[test]
 fn scrollbar_thumb_never_shrinks_below_minimum() {
-    assert_eq!(f32::from(scrollbar_thumb_size(px(100.0), px(10000.0))), 24.0);
+    assert_eq!(
+        f32::from(scrollbar_thumb_size(px(100.0), px(10000.0))),
+        24.0
+    );
 }

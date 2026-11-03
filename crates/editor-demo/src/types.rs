@@ -2,10 +2,13 @@
 //! `main()` stay in `main.rs`, next to the actions/menus/keybindings that
 //! drive them.
 
+use editor_ui::CommentTarget;
 use editor_ui::{DiffState, DiffView, EditorState, EditorView, FontConfig};
 use gpui::*;
+use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 use syntax::LanguageRegistry;
 
 use crate::INITIAL_SAMPLE;
@@ -26,13 +29,25 @@ pub(crate) struct DemoApp {
     pub(crate) comment_gutter: bool,
     pub(crate) file_path: Option<PathBuf>,
     pub(crate) focus_handle: FocusHandle,
+    pub(crate) comment_target: Rc<RefCell<Option<CommentTarget>>>,
+    pub(crate) _state_subscription: Subscription,
 }
 
 impl DemoApp {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let registry = LanguageRegistry::builtin();
         let state = cx.new(|_| EditorState::readonly(INITIAL_SAMPLE, registry.for_name("rust")));
+        let comment_target = Rc::new(RefCell::new(None));
+        let comment_target_for_handler = comment_target.clone();
         let view = cx.new(|cx| EditorView::new(&state, cx));
+        state.update(cx, |editor, _| {
+            editor.set_comment_target_handler(Some(Box::new(move |target| {
+                *comment_target_for_handler.borrow_mut() = Some(target);
+            })));
+        });
+        let state_subscription = cx.observe(&state, |_this, _state, cx| {
+            cx.notify();
+        });
         let diff_state =
             cx.new(|_| DiffState::new(INITIAL_SAMPLE, INITIAL_SAMPLE, registry.for_name("rust")));
         let diff_view = cx.new(|_| DiffView::new(&diff_state));
@@ -48,6 +63,8 @@ impl DemoApp {
             comment_gutter: false,
             file_path: None,
             focus_handle,
+            comment_target,
+            _state_subscription: state_subscription,
         }
     }
 

@@ -52,6 +52,8 @@ impl Render for DemoApp {
         let wrap_enabled = self.state.read(cx).wrap_enabled();
         let showing_diff = self.showing_diff;
         let using_custom_font = self.using_custom_font;
+        let comment_gutter = self.comment_gutter;
+        let comment_target = *self.comment_target.borrow();
         let diff = self.diff_state.read(cx);
         let diff_label = if diff.is_empty() {
             "Diff (no changes)".to_string()
@@ -209,6 +211,27 @@ impl Render for DemoApp {
                             )
                             .child(
                                 div()
+                                    .id("comment-toggle")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(if comment_gutter {
+                                        rgb(0x89b4fa)
+                                    } else {
+                                        rgb(0x313244)
+                                    })
+                                    .text_color(if comment_gutter {
+                                        rgb(0x1e1e2e)
+                                    } else {
+                                        rgb(0xcdd6f4)
+                                    })
+                                    .child("Comments")
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.toggle_comment_gutter(cx)
+                                    })),
+                            )
+                            .child(
+                                div()
                                     .text_xs()
                                     .px_2()
                                     .py_0p5()
@@ -227,6 +250,33 @@ impl Render for DemoApp {
                     el.child(self.view.clone())
                 }
             }))
+            .when(comment_target.is_some(), |el| {
+                let target = comment_target.expect("checked above");
+                el.child(
+                    div()
+                        .id("comment-composer")
+                        .absolute()
+                        .left(px(72.0))
+                        .bottom(px(24.0))
+                        .w(px(420.0))
+                        .p_3()
+                        .rounded_md()
+                        .bg(rgb(0x313244))
+                        .border_1()
+                        .border_color(rgb(0x89b4fa))
+                        .text_color(rgb(0xcdd6f4))
+                        .child(format!(
+                            "Comment on lines {}–{}",
+                            target.start_line, target.end_line
+                        ))
+                        .child(
+                            div()
+                                .mt_2()
+                                .text_sm()
+                                .child("Demo composer: add your comment here"),
+                        ),
+                )
+            })
     }
 }
 

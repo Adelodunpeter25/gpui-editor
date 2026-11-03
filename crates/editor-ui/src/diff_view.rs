@@ -189,7 +189,8 @@ impl DiffView {
 /// Gutter number column: right-aligned, blank (not `0`) when a line has no
 /// counterpart on that side (a pure add/remove).
 fn gutter_number(n: Option<u32>) -> String {
-    n.map(|n| format!("{n:>4}")).unwrap_or_else(|| " ".repeat(4))
+    n.map(|n| format!("{n:>4}"))
+        .unwrap_or_else(|| " ".repeat(4))
 }
 
 /// Bundles a diff row's positional bookkeeping — keeps `render_diff_line`'s
@@ -396,8 +397,7 @@ impl Render for DiffView {
                 Some((v, f, w)) if v == diff_version && f == font => w,
                 _ => {
                     let w = state_snapshot.max_line_width(char_width);
-                    *self.content_width_cache.borrow_mut() =
-                        Some((diff_version, font.clone(), w));
+                    *self.content_width_cache.borrow_mut() = Some((diff_version, font.clone(), w));
                     w
                 }
             }
@@ -461,7 +461,8 @@ impl Render for DiffView {
                             .map(|ix| {
                                 let (row, sub) = cache.resolve(ix);
                                 let line = &state.result.lines[row as usize];
-                                let sub_range = cache.sub_range(row, sub, line.text.chars().count());
+                                let sub_range =
+                                    cache.sub_range(row, sub, line.text.chars().count());
                                 let indent_px = if sub > 0 {
                                     char_width * (cache.indent_chars(row) as f32)
                                 } else {
@@ -531,7 +532,8 @@ impl Render for DiffView {
                     if let Some((start_mouse_y, start_offset_y)) = thumb_dragging.get() {
                         let track_height = base.bounds().size.height;
                         let max_offset_y = base.max_offset().y;
-                        let thumb_height = crate::scrollbar_thumb_height(track_height, max_offset_y);
+                        let thumb_height =
+                            crate::scrollbar_thumb_height(track_height, max_offset_y);
                         let track_range = (track_height - thumb_height).max(px(1.));
                         let delta = event.position.y - start_mouse_y;
                         let new_offset_y = (start_offset_y - delta * (max_offset_y / track_range))

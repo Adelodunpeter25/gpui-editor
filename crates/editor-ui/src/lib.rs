@@ -341,7 +341,7 @@ impl Render for EditorView {
                 let comment_drag = self.comment_drag.clone();
                 let comment_hover = self.comment_hover_row.clone();
                 let state = self.state.clone();
-                move |_event, _window, cx| {
+                move |_event, window, cx| {
                     selecting.set(false);
                     if let Some(anchor) = comment_drag.take() {
                         let current = comment_hover.get().unwrap_or(anchor);
@@ -359,6 +359,7 @@ impl Render for EditorView {
                             );
                             state.report_comment_target(target);
                         });
+                        window.refresh();
                     }
                 }
             })
@@ -886,6 +887,8 @@ fn render_line(
                         ""
                     },
                 )
+                .text_size(px(18.0))
+                .font_weight(FontWeight::BOLD)
                 .left(gutter_pad)
                 .top_0()
                 .w(gutter_w)
