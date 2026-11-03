@@ -8,7 +8,17 @@ use types::DemoApp;
 static FONT_JETBRAINS_MONO_REGULAR: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
 
-actions!(demo, [OpenFile, Quit, ToggleWrap, ToggleDiff, ToggleFont]);
+actions!(
+    demo,
+    [
+        OpenFile,
+        Quit,
+        ToggleWrap,
+        ToggleDiff,
+        ToggleFont,
+        ToggleCommentGutter
+    ]
+);
 
 const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
@@ -70,6 +80,9 @@ impl Render for DemoApp {
             }))
             .on_action(cx.listener(|this, _: &ToggleFont, _window, cx| {
                 this.toggle_font(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleCommentGutter, _window, cx| {
+                this.toggle_comment_gutter(cx);
             }))
             // Top toolbar / status bar with Open button
             .child(
@@ -231,16 +244,12 @@ fn main() {
         cx.set_menus(vec![
             Menu {
                 name: "GPUI Editor".into(),
-                items: vec![
-                    MenuItem::action("Quit GPUI Editor", Quit),
-                ],
+                items: vec![MenuItem::action("Quit GPUI Editor", Quit)],
                 disabled: false,
             },
             Menu {
                 name: "File".into(),
-                items: vec![
-                    MenuItem::action("Open File…", OpenFile),
-                ],
+                items: vec![MenuItem::action("Open File…", OpenFile)],
                 disabled: false,
             },
             Menu {
@@ -249,6 +258,7 @@ fn main() {
                     MenuItem::action("Toggle Word Wrap", ToggleWrap),
                     MenuItem::action("Toggle Diff View", ToggleDiff),
                     MenuItem::action("Toggle Font (Menlo)", ToggleFont),
+                    MenuItem::action("Toggle Comment Gutter", ToggleCommentGutter),
                 ],
                 disabled: false,
             },
@@ -264,6 +274,8 @@ fn main() {
             KeyBinding::new("ctrl-alt-d", ToggleDiff, Some("DemoApp")),
             KeyBinding::new("cmd-alt-f", ToggleFont, Some("DemoApp")),
             KeyBinding::new("ctrl-alt-f", ToggleFont, Some("DemoApp")),
+            KeyBinding::new("cmd-alt-c", ToggleCommentGutter, Some("DemoApp")),
+            KeyBinding::new("ctrl-alt-c", ToggleCommentGutter, Some("DemoApp")),
         ]);
         editor_ui::init(cx);
 

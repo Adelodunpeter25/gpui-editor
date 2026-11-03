@@ -1,6 +1,37 @@
 use edit_buffer::Point;
-use editor_ui::{EditorState, FontConfig, Mode};
+use editor_ui::{comment_target_from, gutter_hit_test, EditorState, FontConfig, Mode};
 use gpui::{px, AppContext as _, TestAppContext};
+
+#[test]
+fn comment_target_math_orders_and_clamps_lines() {
+    assert_eq!(
+        comment_target_from(Point { row: 8, col: 0 }, Point { row: 2, col: 0 }, 5),
+        editor_ui::CommentTarget {
+            start_line: 3,
+            end_line: 5
+        }
+    );
+    assert_eq!(
+        comment_target_from(Point { row: 2, col: 0 }, Point { row: 2, col: 0 }, 5),
+        editor_ui::CommentTarget {
+            start_line: 3,
+            end_line: 3
+        }
+    );
+    assert_eq!(
+        comment_target_from(Point { row: 0, col: 0 }, Point { row: 99, col: 0 }, 5),
+        editor_ui::CommentTarget {
+            start_line: 1,
+            end_line: 5
+        }
+    );
+}
+
+#[test]
+fn comment_gutter_hit_test_has_no_layout_shift() {
+    assert!(gutter_hit_test(10.0, 8.0, 20.0));
+    assert!(!gutter_hit_test(28.0, 8.0, 20.0));
+}
 
 // `insert` takes a `Context<EditorState>` (to spawn a background rehighlight
 // on large files) — the first test in this crate needing a real GPUI

@@ -27,14 +27,17 @@ use wrap::{clip_to_subrange, WrapCache};
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use diff_view::{DiffState, DiffView};
 pub use state::EditorState;
-pub use types::{FontConfig, IndentOptions, Mode, SearchState, Selection};
+pub use types::{
+    comment_target_from, gutter_hit_test, CommentTarget, FontConfig, IndentOptions, Mode,
+    SearchState, Selection,
+};
 pub use view::EditorView;
 
 // ---------------------------------------------------------------------------
 // Actions + view rendering
 // ---------------------------------------------------------------------------
 
-actions!(editor_ui, [Copy, SelectAll]);
+actions!(editor_ui, [Copy, SelectAll, CancelComment]);
 
 /// Bind default keys for `editor_ui`'s actions. Call once at app startup.
 pub fn init(cx: &mut App) {
@@ -178,6 +181,7 @@ impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_snapshot_version = self.state.read(cx).version();
         let wrap_enabled = self.state.read(cx).wrap_enabled();
+        let comment_enabled = self.state.read(cx).comment_gutter() && !wrap_enabled;
         let font = self.state.read(cx).font().clone();
 
         let measured_height = self.viewport_height.get();
@@ -309,6 +313,8 @@ impl Render for EditorView {
             drag_anchor: self.drag_anchor.clone(),
             last_head: self.last_head.clone(),
             h_handle: base_handle.clone(),
+            comment_hover_row: self.comment_hover_row.clone(),
+            comment_drag: self.comment_drag.clone(),
         };
 
         div()
@@ -321,9 +327,40 @@ impl Render for EditorView {
             .key_context("Editor")
             .on_action(cx.listener(EditorView::copy))
             .on_action(cx.listener(EditorView::select_all))
+            .on_action(cx.listener(EditorView::cancel_comment))
+            .on_key_down({
+                let drag = self.comment_drag.clone();
+                move |event, _window, _cx| {
+                    if event.keystroke.key == "escape" {
+                        drag.set(None);
+                    }
+                }
+            })
             .on_mouse_up(MouseButton::Left, {
                 let selecting = self.selecting.clone();
-                move |_event, _window, _cx| selecting.set(false)
+                let comment_drag = self.comment_drag.clone();
+                let comment_hover = self.comment_hover_row.clone();
+                let state = self.state.clone();
+                move |_event, _window, cx| {
+                    selecting.set(false);
+                    if let Some(anchor) = comment_drag.take() {
+                        let current = comment_hover.get().unwrap_or(anchor);
+                        state.update(cx, |state, _| {
+                            let target = comment_target_from(
+                                Point {
+                                    row: anchor,
+                                    col: 0,
+                                },
+                                Point {
+                                    row: current,
+                                    col: 0,
+                                },
+                                state.line_count(),
+                            );
+                            state.report_comment_target(target);
+                        });
+                    }
+                }
             })
             // Paint-less sibling purely to measure the container's pixel
             // size each frame: height snaps the list to whole lines, width
@@ -376,8 +413,9 @@ impl Render for EditorView {
                                     .unwrap_or_default();
                                 let row_start = state.row_start_offset(buffer_row);
                                 let row_end = state.row_end_offset(buffer_row);
-                                let row_selection = row_local_selection(&selection, row_start, row_end)
-                                    .and_then(|s| clip_to_subrange(&s, &sub_range));
+                                let row_selection =
+                                    row_local_selection(&selection, row_start, row_end)
+                                        .and_then(|s| clip_to_subrange(&s, &sub_range));
                                 let indent_px = if sub > 0 {
                                     char_width * (cache.indent_chars(buffer_row) as f32)
                                 } else {
@@ -392,6 +430,9 @@ impl Render for EditorView {
                                     gutter_pad,
                                     gutter_w,
                                     row_width: content_width,
+                                    comment_enabled,
+                                    comment_hover_row: interaction.comment_hover_row.get(),
+                                    comment_drag: interaction.comment_drag.get(),
                                 };
                                 render_line(
                                     meta,
@@ -678,6 +719,9 @@ struct RowMeta {
     /// width gpui measures for its scroll range matches `content_width`,
     /// trailing pad included.
     row_width: Option<Pixels>,
+    comment_enabled: bool,
+    comment_hover_row: Option<u32>,
+    comment_drag: Option<u32>,
 }
 
 fn render_line(
@@ -697,6 +741,9 @@ fn render_line(
         gutter_pad,
         gutter_w,
         row_width,
+        comment_enabled,
+        comment_hover_row,
+        comment_drag,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -731,9 +778,25 @@ fn render_line(
         Some(w) => row_el.w(w),
         None => row_el.w_full(),
     };
+    let row_el = row_el.when(
+        comment_enabled
+            && comment_drag
+                .zip(comment_hover_row)
+                .is_some_and(|(a, b)| row >= a.min(b) && row <= a.max(b)),
+        |el| el.bg(rgba(0x3b82f633)),
+    );
     row_el
         .font_family(font.family.clone())
         .text_size(font.size)
+        .on_mouse_move({
+            let interaction = interaction.clone();
+            move |_event, window, _cx| {
+                if comment_enabled && interaction.comment_drag.get().is_some() {
+                    interaction.comment_hover_row.set(Some(row));
+                    window.refresh();
+                }
+            }
+        })
         .child(
             div()
                 .id(("editor-line-content", row as usize))
@@ -798,6 +861,32 @@ fn render_line(
             div()
                 .absolute()
                 .left(gutter_pad)
+                .on_mouse_move({
+                    let hover = interaction.comment_hover_row.clone();
+                    move |_event, window, _cx| {
+                        hover.set(Some(row));
+                        window.refresh();
+                    }
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let drag = interaction.comment_drag.clone();
+                    let hover = interaction.comment_hover_row.clone();
+                    move |_event, window, _cx| {
+                        hover.set(Some(row));
+                        drag.set(Some(row));
+                        window.refresh();
+                    }
+                })
+                .child(
+                    if comment_enabled
+                        && (comment_hover_row == Some(row) || comment_drag == Some(row))
+                    {
+                        "+"
+                    } else {
+                        ""
+                    },
+                )
+                .left(gutter_pad)
                 .top_0()
                 .w(gutter_w)
                 .h_full()
@@ -859,7 +948,11 @@ pub(crate) fn render_spans(
         children.push(div().child(" ".to_string()).into_any_element());
     }
 
-    div().flex().flex_row().children(children).into_any_element()
+    div()
+        .flex()
+        .flex_row()
+        .children(children)
+        .into_any_element()
 }
 
 // Re-export for host apps.

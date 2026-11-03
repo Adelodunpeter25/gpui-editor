@@ -32,6 +32,8 @@ pub struct EditorState {
     /// render-time concern owned by `EditorView`'s `WrapCache` (needs a
     /// `Window`/text system), not this GPUI-free model.
     wrap_enabled: bool,
+    comment_gutter: bool,
+    comment_target_handler: Option<Box<dyn Fn(crate::types::CommentTarget)>>,
     font: FontConfig,
     // Row -> highlight spans clipped to that row (rebuilt on edit/highlight).
     // M1 moves this to a shaped-line cache keyed by (row, version).
@@ -62,6 +64,8 @@ impl EditorState {
             search: SearchState::default(),
             indent: IndentOptions::default(),
             wrap_enabled: false,
+            comment_gutter: false,
+            comment_target_handler: None,
             font: FontConfig::default(),
             row_spans: Vec::new(),
         };
@@ -149,6 +153,32 @@ impl EditorState {
 
     pub fn set_wrap_enabled(&mut self, enabled: bool) {
         self.wrap_enabled = enabled;
+    }
+
+    pub fn with_comment_gutter(mut self, enabled: bool) -> Self {
+        self.comment_gutter = enabled;
+        self
+    }
+
+    pub fn set_comment_gutter(&mut self, enabled: bool, _cx: &mut Context<Self>) {
+        self.comment_gutter = enabled;
+    }
+
+    pub fn set_comment_target_handler(
+        &mut self,
+        handler: Option<Box<dyn Fn(crate::types::CommentTarget)>>,
+    ) {
+        self.comment_target_handler = handler;
+    }
+
+    pub fn comment_gutter(&self) -> bool {
+        self.comment_gutter
+    }
+
+    pub(crate) fn report_comment_target(&self, target: crate::types::CommentTarget) {
+        if let Some(handler) = &self.comment_target_handler {
+            handler(target);
+        }
     }
 
     pub fn with_font(mut self, font: FontConfig) -> Self {

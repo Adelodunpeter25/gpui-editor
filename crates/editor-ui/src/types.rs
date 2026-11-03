@@ -7,8 +7,32 @@
 //! dependency-light on purpose: `diff_view.rs` and `wrap.rs` both need
 //! `FontConfig` without pulling in the editor model.
 
+use edit_buffer::Point;
 use gpui::{px, Pixels, SharedString};
 use std::ops::Range;
+
+/// A completed, 1-based inclusive line range selected from the comment gutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommentTarget {
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// Convert two zero-based buffer points into a clamped, ordered comment target.
+pub fn comment_target_from(anchor: Point, current: Point, line_count: u32) -> CommentTarget {
+    let last = line_count.max(1) - 1;
+    let start = anchor.row.min(last);
+    let end = current.row.min(last);
+    CommentTarget {
+        start_line: start.min(end) + 1,
+        end_line: start.max(end) + 1,
+    }
+}
+
+/// True when a pointer x coordinate is inside the existing gutter.
+pub fn gutter_hit_test(x: f32, gutter_left: f32, gutter_width: f32) -> bool {
+    x >= gutter_left && x < gutter_left + gutter_width
+}
 use syntax::Capture;
 
 /// Edit capability + diff-view flag. Readonly disables undo history + input

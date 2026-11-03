@@ -44,6 +44,8 @@ pub struct EditorView {
     /// `Some((mouse_x_at_down, scroll_offset_x_at_down))` while the
     /// horizontal scrollbar thumb is being dragged; `None` otherwise.
     pub(crate) h_thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
+    pub(crate) comment_hover_row: Rc<Cell<Option<u32>>>,
+    pub(crate) comment_drag: Rc<Cell<Option<u32>>>,
     /// Cached widest-row text width: `(buffer version, font, max px)`.
     /// Recomputed only when the buffer or font changes, not per frame —
     /// the scan is O(total chars), same cost class as a wrap rebuild.
@@ -70,6 +72,8 @@ impl EditorView {
             last_head: Rc::new(Cell::new(None)),
             thumb_dragging: Rc::new(Cell::new(None)),
             h_thumb_dragging: Rc::new(Cell::new(None)),
+            comment_hover_row: Rc::new(Cell::new(None)),
+            comment_drag: Rc::new(Cell::new(None)),
             content_width_cache: Rc::new(RefCell::new(None)),
             viewport_width: Rc::new(Cell::new(px(0.))),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
@@ -81,6 +85,17 @@ impl EditorView {
         if !text.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
+    }
+
+    pub(crate) fn cancel_comment(
+        &mut self,
+        _: &crate::CancelComment,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.comment_drag.set(None);
+        self.comment_hover_row.set(None);
+        cx.notify();
     }
 
     pub(crate) fn select_all(
@@ -109,4 +124,6 @@ pub(crate) struct RowInteraction {
     /// (render-time values would go stale between repaints during a scroll
     /// + drag combination).
     pub(crate) h_handle: ScrollHandle,
+    pub(crate) comment_hover_row: Rc<Cell<Option<u32>>>,
+    pub(crate) comment_drag: Rc<Cell<Option<u32>>>,
 }

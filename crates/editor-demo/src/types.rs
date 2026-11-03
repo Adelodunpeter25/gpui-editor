@@ -23,6 +23,7 @@ pub(crate) struct DemoApp {
     /// bundled — proves `FontConfig` is a real override point, not just a
     /// renamed constant) is active instead of the bundled default.
     pub(crate) using_custom_font: bool,
+    pub(crate) comment_gutter: bool,
     pub(crate) file_path: Option<PathBuf>,
     pub(crate) focus_handle: FocusHandle,
 }
@@ -44,6 +45,7 @@ impl DemoApp {
             diff_view,
             showing_diff: false,
             using_custom_font: false,
+            comment_gutter: false,
             file_path: None,
             focus_handle,
         }
@@ -60,14 +62,24 @@ impl DemoApp {
         } else {
             FontConfig::default()
         };
-        self.state.update(cx, |editor, _cx| editor.set_font(font.clone()));
+        self.state
+            .update(cx, |editor, _cx| editor.set_font(font.clone()));
         self.diff_state.update(cx, |diff, _cx| diff.set_font(font));
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_comment_gutter(&mut self, cx: &mut Context<Self>) {
+        self.comment_gutter = !self.comment_gutter;
+        let enabled = self.comment_gutter;
+        self.state
+            .update(cx, |editor, cx| editor.set_comment_gutter(enabled, cx));
         cx.notify();
     }
 
     pub(crate) fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
         let enabled = self.state.read(cx).wrap_enabled();
-        self.state.update(cx, |editor, _cx| editor.set_wrap_enabled(!enabled));
+        self.state
+            .update(cx, |editor, _cx| editor.set_wrap_enabled(!enabled));
         cx.notify();
     }
 
