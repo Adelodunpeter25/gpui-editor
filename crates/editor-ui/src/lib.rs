@@ -752,17 +752,11 @@ fn render_line(
         String::new()
     };
     let line_height = font.line_height;
-    // Use the active syntax run as the accent source so comment selection
-    // remains legible across the configured syntax themes without introducing
-    // a second hard-coded editor palette.
-    let comment_accent = runs
-        .first()
-        .map(|(_, color)| color.opacity(0.28))
-        .unwrap_or_else(|| color_for(Capture::Keyword).opacity(0.28));
-    let comment_chip = runs
-        .first()
-        .map(|(_, color)| color.opacity(0.95))
-        .unwrap_or_else(|| color_for(Capture::Keyword));
+    // Comment targets intentionally use a stable review yellow, independent
+    // of syntax scope colors. This keeps the annotation affordance and the
+    // selected range recognizable when a file theme changes.
+    let comment_accent = rgba(0xfacc1538);
+    let comment_chip = rgb(0xfacc15);
     // Continuation sub-lines are left-padded by `indent_px` so a wrapped
     // line visually aligns under its own indent (see `WrapCache::rebuild`);
     // hit-testing has to account for that same offset or clicks would land
@@ -926,7 +920,6 @@ fn render_line(
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_md()
                                 .bg(comment_chip)
                                 .text_color(Hsla::black())
                                 .text_size(px(20.0))
