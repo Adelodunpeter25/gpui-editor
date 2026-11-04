@@ -756,7 +756,6 @@ fn render_line(
     // of syntax scope colors. This keeps the annotation affordance and the
     // selected range recognizable when a file theme changes.
     let comment_accent = rgba(0xfacc1538);
-    let comment_chip = rgb(0xfacc15);
     // Continuation sub-lines are left-padded by `indent_px` so a wrapped
     // line visually aligns under its own indent (see `WrapCache::rebuild`);
     // hit-testing has to account for that same offset or clicks would land
@@ -768,7 +767,7 @@ fn render_line(
     let down_text = Rc::new(text.clone());
     let move_ = interaction.clone();
     let move_font = font.clone();
-    let move_text = Rc::new(text.clone());
+    let move_text = down_text.clone();
 
     let row_el = div()
         .id(("editor-line", row as usize))
@@ -876,23 +875,6 @@ fn render_line(
             div()
                 .absolute()
                 .left(gutter_pad)
-                .on_mouse_move({
-                    let hover = interaction.comment_hover_row.clone();
-                    move |_event, window, _cx| {
-                        hover.set(Some(row));
-                        window.refresh();
-                    }
-                })
-                .on_mouse_down(MouseButton::Left, {
-                    let drag = interaction.comment_drag.clone();
-                    let hover = interaction.comment_hover_row.clone();
-                    move |_event, window, _cx| {
-                        hover.set(Some(row));
-                        drag.set(Some(row));
-                        window.refresh();
-                    }
-                })
-                .left(gutter_pad)
                 .top_0()
                 .w(gutter_w)
                 .h_full()
@@ -913,17 +895,13 @@ fn render_line(
                             div()
                                 .id(("comment-plus", row as usize))
                                 .absolute()
-                                .left(px(-4.0))
-                                .top(px(2.0))
-                                .w(px(24.0))
-                                .h(px(24.0))
+                                .left(px(2.0))
+                                .top_0()
+                                .h_full()
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .bg(comment_chip)
-                                .text_color(Hsla::black())
-                                .text_size(px(20.0))
-                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xcdd6f4))
+                                .text_size(px(16.0))
                                 .child("+"),
                         )
                     },
