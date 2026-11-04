@@ -182,7 +182,6 @@ impl Render for EditorView {
         let state_snapshot_version = self.state.read(cx).version();
         let wrap_enabled = self.state.read(cx).wrap_enabled();
         let comment_enabled = self.state.read(cx).comment_gutter() && !wrap_enabled;
-        let comment_selections = self.state.read(cx).comment_selections().to_vec();
         let font = self.state.read(cx).font().clone();
 
         let measured_height = self.viewport_height.get();
@@ -390,6 +389,8 @@ impl Render for EditorView {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
                         let cache = wrap_cache.borrow();
+                        // Borrowed straight from state: no per-render Vec clone.
+                        let comment_selections = state.comment_selections();
                         // Consecutive visual rows usually share a buffer row
                         // (wrapped lines): fetch/measure its text once and keep
                         // a forward (char, byte) cursor so slicing is linear.
@@ -402,8 +403,10 @@ impl Render for EditorView {
                                     let n = t.chars().count();
                                     cur = Some((buffer_row, t, n, 0, 0));
                                 }
-                                let (_, full_text, row_len, cur_char, cur_byte) =
-                                    cur.as_mut().map(|c| (c.0, &c.1, c.2, &mut c.3, &mut c.4)).unwrap();
+                                let (_, full_text, row_len, cur_char, cur_byte) = cur
+                                    .as_mut()
+                                    .map(|c| (c.0, &c.1, c.2, &mut c.3, &mut c.4))
+                                    .unwrap();
                                 let row_len = row_len;
                                 let sub_range = cache.sub_range(buffer_row, sub, row_len);
                                 let sub_len = sub_range.end - sub_range.start;
