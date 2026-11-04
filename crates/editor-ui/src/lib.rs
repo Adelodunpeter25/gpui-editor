@@ -385,20 +385,42 @@ impl Render for EditorView {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
                         let cache = wrap_cache.borrow();
+                        // Consecutive visual rows usually share a buffer row
+                        // (wrapped lines): fetch/measure its text once and keep
+                        // a forward (char, byte) cursor so slicing is linear.
+                        let mut cur: Option<(u32, String, usize, usize, usize)> = None;
                         range
                             .map(|visual_ix| {
                                 let (buffer_row, sub) = cache.resolve(visual_ix);
-                                let full_text = state.line_text(buffer_row);
-                                let row_len = full_text.chars().count();
+                                if cur.as_ref().map(|c| c.0) != Some(buffer_row) {
+                                    let t = state.line_text(buffer_row);
+                                    let n = t.chars().count();
+                                    cur = Some((buffer_row, t, n, 0, 0));
+                                }
+                                let (_, full_text, row_len, cur_char, cur_byte) =
+                                    cur.as_mut().map(|c| (c.0, &c.1, c.2, &mut c.3, &mut c.4)).unwrap();
+                                let row_len = row_len;
                                 let sub_range = cache.sub_range(buffer_row, sub, row_len);
                                 let sub_len = sub_range.end - sub_range.start;
                                 let render_len = sub_len.min(MAX_ROW_RENDER_CHARS);
                                 let sub_range = sub_range.start..sub_range.start + render_len;
-                                let text: String = full_text
-                                    .chars()
-                                    .skip(sub_range.start)
-                                    .take(render_len)
-                                    .collect();
+                                if sub_range.start < *cur_char {
+                                    *cur_char = 0;
+                                    *cur_byte = 0;
+                                }
+                                let rest = &full_text[*cur_byte..];
+                                let start_b = rest
+                                    .char_indices()
+                                    .nth(sub_range.start - *cur_char)
+                                    .map_or(rest.len(), |(i, _)| i);
+                                *cur_byte += start_b;
+                                *cur_char = sub_range.start;
+                                let rest = &full_text[*cur_byte..];
+                                let end_b = rest
+                                    .char_indices()
+                                    .nth(render_len)
+                                    .map_or(rest.len(), |(i, _)| i);
+                                let text: String = rest[..end_b].to_string();
                                 let runs = state
                                     .row_spans
                                     .get(buffer_row as usize)
