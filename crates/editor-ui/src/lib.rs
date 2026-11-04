@@ -31,7 +31,7 @@ pub use types::{
     comment_target_from, gutter_hit_test, CommentTarget, FontConfig, IndentOptions, Mode,
     SearchState, Selection,
 };
-pub use view::EditorView;
+pub use view::{CommentAnchor, EditorView};
 
 // ---------------------------------------------------------------------------
 // Actions + view rendering
@@ -137,7 +137,7 @@ pub(crate) fn round_wrap_width(width: Pixels) -> Pixels {
 /// measured via a `canvas` per row (previously: one measurement canvas per
 /// *visible row*, remeasuring an identical value ~30 times a render for no
 /// reason, since every row has the same gutter/padding).
-const CONTENT_X_REM: f32 = 3.25;
+pub(crate) const CONTENT_X_REM: f32 = 3.25;
 
 /// Cap on chars rendered/hit-tested per visual row. Without this, a single
 /// pathologically long line (a minified file, a giant JSON blob) with wrap
@@ -182,6 +182,7 @@ impl Render for EditorView {
         let state_snapshot_version = self.state.read(cx).version();
         let wrap_enabled = self.state.read(cx).wrap_enabled();
         let comment_enabled = self.state.read(cx).comment_gutter() && !wrap_enabled;
+        let comment_selections = self.state.read(cx).comment_selections().to_vec();
         let font = self.state.read(cx).font().clone();
 
         let measured_height = self.viewport_height.get();
@@ -345,7 +346,7 @@ impl Render for EditorView {
                     selecting.set(false);
                     if let Some(anchor) = comment_drag.take() {
                         let current = comment_hover.get().unwrap_or(anchor);
-                        state.update(cx, |state, _| {
+                        state.update(cx, |state, cx| {
                             let target = comment_target_from(
                                 Point {
                                     row: anchor,
@@ -357,7 +358,11 @@ impl Render for EditorView {
                                 },
                                 state.line_count(),
                             );
+                            // Keep the range lit after release; the host
+                            // clears it when the comment is removed.
+                            state.add_comment_selection(target);
                             state.report_comment_target(target);
+                            cx.notify();
                         });
                         window.refresh();
                     }
@@ -444,6 +449,10 @@ impl Render for EditorView {
                                 } else {
                                     px(0.)
                                 };
+                                let comment_selected = comment_selections.iter().any(|target| {
+                                    buffer_row + 1 >= target.start_line
+                                        && buffer_row + 1 <= target.end_line
+                                });
                                 let meta = RowMeta {
                                     row: buffer_row,
                                     show_line_number: sub == 0,
@@ -454,6 +463,7 @@ impl Render for EditorView {
                                     gutter_w,
                                     row_width: content_width,
                                     comment_enabled,
+                                    comment_selected,
                                     comment_hover_row: interaction.comment_hover_row.get(),
                                     comment_drag: interaction.comment_drag.get(),
                                 };
@@ -743,6 +753,8 @@ struct RowMeta {
     /// trailing pad included.
     row_width: Option<Pixels>,
     comment_enabled: bool,
+    /// Inside a persisted comment range (highlighted after the drag ends).
+    comment_selected: bool,
     comment_hover_row: Option<u32>,
     comment_drag: Option<u32>,
 }
@@ -765,6 +777,7 @@ fn render_line(
         gutter_w,
         row_width,
         comment_enabled,
+        comment_selected,
         comment_hover_row,
         comment_drag,
     } = meta;
@@ -806,10 +819,11 @@ fn render_line(
         None => row_el.w_full(),
     };
     let row_el = row_el.when(
-        comment_enabled
-            && comment_drag
-                .zip(comment_hover_row)
-                .is_some_and(|(a, b)| row >= a.min(b) && row <= a.max(b)),
+        (comment_enabled || comment_selected)
+            && (comment_selected
+                || comment_drag
+                    .zip(comment_hover_row)
+                    .is_some_and(|(a, b)| row >= a.min(b) && row <= a.max(b))),
         |el| el.bg(comment_accent),
     );
     row_el

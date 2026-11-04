@@ -13,7 +13,7 @@ use std::ops::Range;
 use syntax::{HighlightSpan, Language, ThemePreset};
 
 use crate::chars_display_width;
-use crate::types::{FontConfig, IndentOptions, Mode, SearchState, Selection, StyledSpan};
+use crate::types::{CommentTarget, FontConfig, IndentOptions, Mode, SearchState, Selection, StyledSpan};
 
 /// Below this size, rehighlight runs synchronously inline rather than via
 /// `cx.background_spawn` — see `EditorState::rehighlight_from`.
@@ -33,7 +33,11 @@ pub struct EditorState {
     /// `Window`/text system), not this GPUI-free model.
     wrap_enabled: bool,
     comment_gutter: bool,
-    comment_target_handler: Option<Box<dyn Fn(crate::types::CommentTarget)>>,
+    comment_target_handler: Option<Box<dyn Fn(CommentTarget)>>,
+    /// Line ranges the host has marked as comment targets. They stay
+    /// highlighted after the drag ends and are cleared only when the host
+    /// removes the comment.
+    comment_selections: Vec<CommentTarget>,
     font: FontConfig,
     // Row -> highlight spans clipped to that row (rebuilt on edit/highlight).
     // M1 moves this to a shaped-line cache keyed by (row, version).
@@ -66,6 +70,7 @@ impl EditorState {
             wrap_enabled: false,
             comment_gutter: false,
             comment_target_handler: None,
+            comment_selections: Vec::new(),
             font: FontConfig::default(),
             row_spans: Vec::new(),
         };
@@ -164,10 +169,7 @@ impl EditorState {
         self.comment_gutter = enabled;
     }
 
-    pub fn set_comment_target_handler(
-        &mut self,
-        handler: Option<Box<dyn Fn(crate::types::CommentTarget)>>,
-    ) {
+    pub fn set_comment_target_handler(&mut self, handler: Option<Box<dyn Fn(CommentTarget)>>) {
         self.comment_target_handler = handler;
     }
 
@@ -175,7 +177,23 @@ impl EditorState {
         self.comment_gutter
     }
 
-    pub(crate) fn report_comment_target(&self, target: crate::types::CommentTarget) {
+    /// Replace the persisted comment ranges (the host owns the comment list).
+    pub fn set_comment_selections(&mut self, selections: Vec<CommentTarget>) {
+        self.comment_selections = selections;
+    }
+
+    /// Add one range if it is not already highlighted.
+    pub fn add_comment_selection(&mut self, target: CommentTarget) {
+        if !self.comment_selections.contains(&target) {
+            self.comment_selections.push(target);
+        }
+    }
+
+    pub fn comment_selections(&self) -> &[CommentTarget] {
+        &self.comment_selections
+    }
+
+    pub(crate) fn report_comment_target(&self, target: CommentTarget) {
         if let Some(handler) = &self.comment_target_handler {
             handler(target);
         }

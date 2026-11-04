@@ -174,3 +174,24 @@ fn font_is_configurable_via_builder_and_setter() {
     s.set_font(custom.clone());
     assert_eq!(s.font(), &custom);
 }
+
+#[test]
+fn comment_selections_persist_and_dedupe() {
+    let mut state = EditorState::readonly("a\nb\nc", Some(&syntax::RUST));
+    let first = editor_ui::CommentTarget {
+        start_line: 1,
+        end_line: 2,
+    };
+    let second = editor_ui::CommentTarget {
+        start_line: 3,
+        end_line: 3,
+    };
+
+    state.add_comment_selection(first);
+    state.add_comment_selection(first);
+    state.add_comment_selection(second);
+    assert_eq!(state.comment_selections(), &[first, second]);
+
+    state.set_comment_selections(vec![second]);
+    assert_eq!(state.comment_selections(), &[second]);
+}

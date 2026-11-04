@@ -5,14 +5,14 @@
 //! points at lives in `state.rs`.
 
 use gpui::{
-    px, ClipboardItem, Context, Entity, FocusHandle, Pixels, ScrollHandle, UniformListScrollHandle,
-    Window,
+    App, ClipboardItem, Context, Entity, FocusHandle, Pixels, ScrollHandle,
+    UniformListScrollHandle, Window, px,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::state::EditorState;
-use crate::types::FontConfig;
+use crate::types::{CommentTarget, FontConfig};
 use crate::wrap::WrapCache;
 use crate::{Copy, SelectAll};
 
@@ -87,6 +87,33 @@ impl EditorView {
         }
     }
 
+    /// Where the host should place UI attached below `target`'s last line.
+    ///
+    /// The editor's rows are virtualized, so a host cannot insert a
+    /// variable-height card into the list. This reports the same origin the
+    /// rows use (list padding + rows above the card + the list's live scroll
+    /// offset), letting the host paint an overlay that rides scrolling.
+    pub fn comment_anchor(
+        &self,
+        target: CommentTarget,
+        window: &Window,
+        cx: &App,
+    ) -> Option<CommentAnchor> {
+        let state = self.state.read(cx);
+        if state.wrap_enabled() || !state.comment_gutter() {
+            return None;
+        }
+        let rem = window.rem_size();
+        Some(CommentAnchor {
+            row_after: target.end_line,
+            line_height: state.font().line_height,
+            top_padding: rem * 0.5,
+            content_x: rem * crate::CONTENT_X_REM,
+            scroll_y: self.scroll_handle.0.borrow().base_handle.offset().y,
+            viewport_height: self.viewport_height.get(),
+        })
+    }
+
     pub(crate) fn cancel_comment(
         &mut self,
         _: &crate::CancelComment,
@@ -107,6 +134,25 @@ impl EditorView {
         self.state.update(cx, |state, _| state.select_all());
         cx.notify();
     }
+}
+
+/// Geometry for a host-rendered card attached below a comment range.
+///
+/// All values are in the editor's coordinate space, so a host that wraps the
+/// editor 1:1 can position the card with
+/// `top_padding + row_after * line_height + scroll_y`.
+#[derive(Clone, Copy, Debug)]
+pub struct CommentAnchor {
+    /// 1-based end line of the range: rows `0..row_after` sit above the card.
+    pub row_after: u32,
+    pub line_height: Pixels,
+    /// The list's top padding.
+    pub top_padding: Pixels,
+    /// Where row text starts horizontally (gutter + row padding).
+    pub content_x: Pixels,
+    /// The list's live vertical scroll offset (negative once scrolled).
+    pub scroll_y: Pixels,
+    pub viewport_height: Pixels,
 }
 
 /// Shared, cheaply-clonable handles a rendered row's mouse closures need to
