@@ -1,7 +1,7 @@
 # Embedding `editor-ui` in another app
 
 A short guide for dropping this crate's code viewer into an existing GPUI
-app. See `implementation.md` for what's actually implemented vs planned.
+app. See `todo.md` for what's actually implemented vs planned.
 
 ## 0. Each crate is a separate, independently-pullable feature
 
@@ -15,8 +15,9 @@ This isn't one monolithic package — pull in only what you need:
   this alone if you just need syntax-highlighted spans to paint yourself —
   e.g. coloring fenced code blocks in a markdown renderer — without
   pulling in the rest of the editor.
-- **`editor-ui`** — the full GPUI scrollable code *viewer*: virtualization,
-  scrollbar, mouse selection, word wrap. Depends on the two crates above.
+- **`editor-ui`** — the full GPUI scrollable code *editor*: virtualization,
+  scrollbar, mouse selection, word wrap, and (opt-in per state) typing,
+  caret motion, and undo/redo. Depends on the two crates above.
   Pull this in only when you actually want a full embeddable file-viewer
   widget, not just colored text — it carries real weight (scroll/selection
   machinery) that's wasted on something like a short static code snippet.
@@ -114,12 +115,14 @@ A system-installed monospace font (e.g. `"Menlo"` on macOS) needs no
 ## 3. Bind the crate's actions once
 
 ```rust
-editor_ui::init(cx); // binds cmd/ctrl-c (copy), cmd/ctrl-a (select all)
+editor_ui::init(cx); // binds copy/select-all (cmd/ctrl-c, cmd/ctrl-a) and
+                     // undo/redo/cut/paste (cmd/ctrl-z, shift-z, x, v)
 ```
 
 Call this once at app startup, same as `cx.bind_keys(...)` for your own
-actions. Without it, copy/select-all silently do nothing (the actions exist
-on `EditorView` but have no keys bound to fire them).
+actions. Without it, those actions exist on `EditorView` but have no keys
+bound to fire them — copy/select-all and the edit-mode clipboard/undo
+combos silently do nothing.
 
 ## 4. Create state + view
 
@@ -136,10 +139,11 @@ let view = cx.new(|cx| EditorView::new(&state, cx));
 div().size_full().child(view.clone())
 ```
 
-`EditorState::readonly` disables undo history (lower RAM) and is the only
-fully-implemented mode today — `EditorState::editable()` exists but there's
-no cursor/input handling wired up in `EditorView` yet (see
-`implementation.md` §7).
+Both modes work: `EditorState::readonly` disables undo history (lower RAM);
+`EditorState::editable(...)` additionally wires typing, caret motion,
+Enter/Tab auto-indent, and undo/redo. Keys reach the buffer only while the
+view is focused — call `view.focus(window, cx)` once after opening (or on
+click), or keyboard input silently does nothing.
 
 ## 5. Comment gutter annotations
 
@@ -211,10 +215,11 @@ handful of named tokens.
 
 ## Not yet available (don't build against these expecting them to exist)
 
-- No cursor, no typing, no `cmd-z` — readonly viewer only.
-- No search overlay, no bracket-match rendering (the model methods exist on
-  `EditorState`, nothing calls them from `EditorView` yet).
-- `DiffState`/`DiffView` (`editor_ui::{DiffState, DiffView}`) highlight each
+- Edit mode is plain-text only: no search overlay, no bracket-match
+  rendering (the model methods exist on `EditorState`, nothing calls them
+  from `EditorView` yet).
+- The diff view stays readonly — `DiffState`/`DiffView`
+  (`editor_ui::{DiffState, DiffView}`) highlight each
   line independently, not the full old/new text once — a multi-line
   construct spanning a change can highlight incorrectly on adjacent
   unchanged lines. See `diff_view.rs`'s module doc for the full tradeoff.
