@@ -237,6 +237,16 @@ impl Render for DemoApp {
                                     .py_0p5()
                                     .rounded_md()
                                     .bg(rgb(0x313244))
+                                    .text_color(rgb(0xa6e3a1))
+                                    .child("✏️ Editable — click in and type (Cmd+Z undoes)"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(rgb(0x313244))
                                     .text_color(rgb(0x89b4fa))
                                     .child(format!("Language: {lang_name}")),
                             ),
@@ -344,7 +354,15 @@ fn main() {
                 ))),
                 ..Default::default()
             },
-            |_window, cx| cx.new(DemoApp::new),
+            |window, cx| {
+                let app = cx.new(DemoApp::new);
+                // Start with the editor focused so typing works immediately,
+                // before the first click.
+                let view = app.read(cx).view.clone();
+                let handle = view.read(cx).focus_handle();
+                window.focus(&handle, cx);
+                app
+            },
         )
         .expect("failed to open window");
 

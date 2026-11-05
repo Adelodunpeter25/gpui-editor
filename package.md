@@ -51,7 +51,7 @@ to an exact git commit here:
 ```toml
 # your host app's Cargo.toml
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f" }
-gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 
 editor-ui = { git = "<this repo's url>" } # or { path = "..." } in a workspace
 ```
@@ -62,6 +62,10 @@ broke this repo's text rendering entirely earlier on (every glyph silently
 failed to paint, no panic, no error). Two different revs can also just fail
 to compile together (mismatched types at the same `"0.2.2"` label), since
 there's no real version compatibility guarantee between commits.
+
+Linux hosts additionally need the `x11` and/or `wayland` feature on
+`gpui_platform` — without one of them the platform panics at startup
+("At least one of the \"wayland\" or \"x11\" features must be enabled").
 
 ## 2. Font: configurable, but registration is still on you
 

@@ -1,6 +1,5 @@
 //! `editor-ui`: embeddable GPUI code view (raw `gpui 0.2.2`, no component kit).
 //!
-//! M0: readonly viewer + optional single-cursor edit stub.
 //! State lives in `Entity<EditorState>`; view holds the handle only.
 //! `edit-buffer` and `syntax` stay GPUI-free so the host app can reuse them
 //! headless. Plain types live in `types.rs`, the model in `state.rs`, the
@@ -13,12 +12,12 @@ mod types;
 mod view;
 mod wrap;
 
-use edit_buffer::Point;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
+use edit_buffer::Point;
 use syntax::Capture;
 use types::StyledSpan;
 use view::RowInteraction;
@@ -33,11 +32,10 @@ pub use types::{
 };
 pub use view::{CommentAnchor, EditorView};
 
-// ---------------------------------------------------------------------------
-// Actions + view rendering
-// ---------------------------------------------------------------------------
-
-actions!(editor_ui, [Copy, SelectAll, CancelComment]);
+actions!(
+    editor_ui,
+    [Copy, SelectAll, CancelComment, Undo, Redo, Cut, Paste]
+);
 
 /// Bind default keys for `editor_ui`'s actions. Call once at app startup.
 pub fn init(cx: &mut App) {
@@ -46,10 +44,229 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-c", Copy, Some("Editor")),
         KeyBinding::new("cmd-a", SelectAll, Some("Editor")),
         KeyBinding::new("ctrl-a", SelectAll, Some("Editor")),
+        KeyBinding::new("cmd-z", Undo, Some("Editor")),
+        KeyBinding::new("shift-cmd-z", Redo, Some("Editor")),
+        KeyBinding::new("ctrl-z", Undo, Some("Editor")),
+        KeyBinding::new("shift-ctrl-z", Redo, Some("Editor")),
+        KeyBinding::new("cmd-x", Cut, Some("Editor")),
+        KeyBinding::new("ctrl-x", Cut, Some("Editor")),
+        KeyBinding::new("cmd-v", Paste, Some("Editor")),
+        KeyBinding::new("ctrl-v", Paste, Some("Editor")),
     ]);
 }
 
-/// Measure (and cache) the monospace glyph advance width for pixel -> column
+/// Route one key event to the buffer in editable mode. Editing keys are
+/// handled on raw `on_key_down` rather than as bound actions: printable
+/// input has no stable binding name, and motion needs no payload. The
+/// `cmd`-combos (undo/redo/cut/paste/copy) stay bound actions. No-op when
+/// the editor isn't focused or is readonly — readonly tabs keep the viewer
+/// behavior byte for byte.
+pub(crate) fn handle_edit_key(
+    event: &KeyDownEvent,
+    focus_handle: &FocusHandle,
+    state: &Entity<EditorState>,
+    key_anchor: &Rc<Cell<Option<usize>>>,
+    goal_col: &Rc<Cell<Option<u32>>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !focus_handle.is_focused(window) || state.read(cx).is_readonly() {
+        return;
+    }
+    let key = event.keystroke.key.as_str();
+    let shift = event.keystroke.modifiers.shift;
+    match key {
+        "left" | "right" | "up" | "down" | "home" | "end" => {
+            cx.stop_propagation();
+            window.prevent_default();
+            move_caret(state, key_anchor, goal_col, key, shift, cx);
+        }
+        "backspace" | "delete" | "enter" | "tab" => {
+            cx.stop_propagation();
+            window.prevent_default();
+            key_anchor.set(None);
+            goal_col.set(None);
+            state.update(cx, |s, cx| {
+                let sel = s.selection().range.clone();
+                match key {
+                    "backspace" => {
+                        if sel.is_empty() {
+                            if sel.start > 0 {
+                                s.type_text(sel.start - 1..sel.start, "", cx);
+                            }
+                        } else {
+                            s.type_text(sel, "", cx);
+                        }
+                    }
+                    "delete" => {
+                        if sel.is_empty() {
+                            let end = s.len_chars();
+                            if sel.end < end {
+                                s.type_text(sel.end..sel.end + 1, "", cx);
+                            }
+                        } else {
+                            s.type_text(sel, "", cx);
+                        }
+                    }
+                    "enter" => {
+                        // Shift+Enter inserts a plain newline (no auto-indent).
+                        if shift {
+                            s.replace_range(sel, "\n", cx);
+                        } else {
+                            let (range, text) = if sel.is_empty() {
+                                s.newline_edit(sel.start)
+                            } else {
+                                (sel, "\n".to_string())
+                            };
+                            s.replace_range(range, &text, cx);
+                        }
+                    }
+                    "tab" => {
+                        let indent = s.indent_options();
+                        let text = if indent.hard_tabs {
+                            "\t".to_string()
+                        } else {
+                            " ".repeat(indent.tab_width as usize)
+                        };
+                        s.replace_range(sel, &text, cx);
+                    }
+                    _ => unreachable!("matched above"),
+                }
+            });
+        }
+        _ => {
+            // Printable input: `key_char` is the typed character (None for
+            // modifier combos and control keys), already shifted-correct.
+            if event.keystroke.modifiers.control
+                || event.keystroke.modifiers.platform
+                || event.keystroke.modifiers.function
+            {
+                return;
+            }
+            let Some(text) = event.keystroke.key_char.as_deref().filter(|s| !s.is_empty()) else {
+                return;
+            };
+            let text = text.to_string();
+            cx.stop_propagation();
+            key_anchor.set(None);
+            goal_col.set(None);
+            state.update(cx, |s, cx| {
+                let sel = s.selection().range.clone();
+                s.type_text(sel, &text, cx);
+            });
+        }
+    }
+}
+
+/// Move (or extend, with shift) the selection for one motion key. The
+/// anchor/goal bookkeeping lives on the view (not the model): `key_anchor`
+/// pins where a shift-drag started, `goal_col` remembers the column an
+/// up/down is aiming at across short lines.
+fn move_caret(
+    state: &Entity<EditorState>,
+    key_anchor: &Rc<Cell<Option<usize>>>,
+    goal_col: &Rc<Cell<Option<u32>>>,
+    key: &str,
+    shift: bool,
+    cx: &mut App,
+) {
+    state.update(cx, |s, cx| {
+        let sel = s.selection().range.clone();
+        let horizontal = matches!(key, "left" | "right" | "home" | "end");
+        if horizontal && !shift {
+            key_anchor.set(None);
+            goal_col.set(None);
+        }
+
+        // Which end the keyboard is dragging (`head`) and which end stays
+        // put (`opposite`). A stored anchor decides; without one (mouse-made
+        // selection, or a caret) assume a forward selection, head at `end`.
+        let (head, opposite) = if sel.is_empty() {
+            (sel.start, sel.start)
+        } else {
+            match key_anchor.get() {
+                Some(a) if a == sel.start => (sel.end, sel.start),
+                Some(a) if a == sel.end => (sel.start, sel.end),
+                _ => (sel.end, sel.start),
+            }
+        };
+
+        let (new_head, new_anchor, new_goal) = match key {
+            "left" => {
+                if shift {
+                    (head.saturating_sub(1), Some(opposite), goal_col.get())
+                } else if sel.is_empty() {
+                    (head.saturating_sub(1), None, None)
+                } else {
+                    (sel.start, None, None)
+                }
+            }
+            "right" => {
+                let len = s.len_chars();
+                if shift {
+                    ((head + 1).min(len), Some(opposite), goal_col.get())
+                } else if sel.is_empty() {
+                    ((head + 1).min(len), None, None)
+                } else {
+                    (sel.end, None, None)
+                }
+            }
+            "home" | "end" => {
+                let row = s.offset_to_point(head).row;
+                let target = if key == "home" {
+                    s.row_start_offset(row)
+                } else {
+                    s.line_end_offset(row)
+                };
+                if shift {
+                    (target, Some(opposite), None)
+                } else {
+                    (target, None, None)
+                }
+            }
+            "up" | "down" => {
+                // Aim at the remembered column; remember it on the first
+                // vertical move of a run.
+                let goal = goal_col.get().unwrap_or(s.offset_to_point(head).col);
+                let row = s.offset_to_point(head).row;
+                let (target_row, at_edge) = if key == "up" {
+                    (row.saturating_sub(1), row == 0)
+                } else {
+                    (row + 1, row + 1 >= s.line_count())
+                };
+                let head_new = if at_edge {
+                    if key == "up" {
+                        0
+                    } else {
+                        s.len_chars()
+                    }
+                } else {
+                    let row_start = s.row_start_offset(target_row);
+                    let max_col = (s.line_end_offset(target_row) - row_start) as u32;
+                    s.point_to_offset(Point {
+                        row: target_row,
+                        col: goal.min(max_col),
+                    })
+                };
+                if shift {
+                    (head_new, Some(opposite), Some(goal))
+                } else {
+                    (head_new, None, Some(goal))
+                }
+            }
+            _ => return,
+        };
+
+        let range = match new_anchor {
+            Some(anchor) => new_head.min(anchor)..new_head.max(anchor),
+            None => new_head..new_head,
+        };
+        s.set_selection(range);
+        key_anchor.set(new_anchor);
+        goal_col.set(new_goal);
+        cx.notify();
+    });
+}
 /// hit testing. Cached alongside the `FontConfig` it was measured for, so a
 /// runtime font change re-measures instead of reusing a stale width.
 pub(crate) fn measure_char_width(
@@ -84,7 +301,7 @@ pub(crate) fn measure_char_width(
 /// advances to the next `tab_width`-column stop, same as `indent_for_newline`
 /// assumes. A single division here (the old approach) put every column after
 /// the first tab in a line off by however wide that tab rendered.
-fn column_for_x(local_x: Pixels, char_width: Pixels, text: &str, tab_width: u32) -> u32 {
+pub(crate) fn column_for_x(local_x: Pixels, char_width: Pixels, text: &str, tab_width: u32) -> u32 {
     let target = local_x.max(px(0.));
     let mut x = px(0.);
     let mut col: u32 = 0;
@@ -106,18 +323,13 @@ fn column_for_x(local_x: Pixels, char_width: Pixels, text: &str, tab_width: u32)
     col
 }
 
-fn resolve_color(span: &StyledSpan) -> Hsla {
-    span.color
-        .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
-        .unwrap_or_else(|| color_for(span.capture))
-}
 
 /// Approximate pixel width consumed by the line-number gutter (`w_10()`,
 /// 2.5rem) + the row's horizontal padding (`px_3()` x2) before wrapped text
 /// content actually starts. Used only to size the word-wrap width; a few
 /// pixels of slack here just wraps a character or two earlier/later than
 /// pixel-perfect, which is cosmetic (see wrap.md's scope notes).
-const WRAP_GUTTER_RESERVE: Pixels = px(64.0);
+pub(crate) const WRAP_GUTTER_RESERVE: Pixels = px(64.0);
 
 /// Bucket size for wrap-width rounding: a live window resize fires the
 /// measuring `canvas` (and so a potential `WrapCache` rebuild, which
@@ -176,7 +388,6 @@ pub(crate) fn chars_display_width(
 pub(crate) fn text_display_width(text: &str, char_width: Pixels, tab_width: u32) -> Pixels {
     chars_display_width(text.chars(), char_width, tab_width)
 }
-
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state_snapshot_version = self.state.read(cx).version();
@@ -315,6 +526,8 @@ impl Render for EditorView {
             h_handle: base_handle.clone(),
             comment_hover_row: self.comment_hover_row.clone(),
             comment_drag: self.comment_drag.clone(),
+            key_anchor: self.key_anchor.clone(),
+            goal_col: self.goal_col.clone(),
         };
 
         div()
@@ -328,12 +541,29 @@ impl Render for EditorView {
             .on_action(cx.listener(EditorView::copy))
             .on_action(cx.listener(EditorView::select_all))
             .on_action(cx.listener(EditorView::cancel_comment))
+            .on_action(cx.listener(EditorView::undo))
+            .on_action(cx.listener(EditorView::redo))
+            .on_action(cx.listener(EditorView::cut))
+            .on_action(cx.listener(EditorView::paste))
             .on_key_down({
                 let drag = self.comment_drag.clone();
-                move |event, _window, _cx| {
+                let focus_handle = self.focus_handle.clone();
+                let state = self.state.clone();
+                let key_anchor = self.key_anchor.clone();
+                let goal_col = self.goal_col.clone();
+                move |event, window, cx| {
                     if event.keystroke.key == "escape" {
                         drag.set(None);
                     }
+                    handle_edit_key(
+                        event,
+                        &focus_handle,
+                        &state,
+                        &key_anchor,
+                        &goal_col,
+                        window,
+                        cx,
+                    );
                 }
             })
             .on_mouse_up(MouseButton::Left, {
@@ -385,9 +615,20 @@ impl Render for EditorView {
                 let mut list = uniform_list(
                     "gpui-editor-lines",
                     visual_row_count,
-                    cx.processor(move |this, range: Range<usize>, _window, cx| {
+                    cx.processor(move |this, range: Range<usize>, window, cx| {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
+                        // Caret: only an empty selection in a focused,
+                        // editable editor paints one (a non-empty selection
+                        // keeps today's highlight; readonly never shows it).
+                        let caret_offset = if selection.is_empty()
+                            && state.mode() == Mode::Editable
+                            && this.focus_handle.is_focused(window)
+                        {
+                            Some(selection.start)
+                        } else {
+                            None
+                        };
                         let cache = wrap_cache.borrow();
                         // Borrowed straight from state: no per-render Vec clone.
                         let comment_selections = state.comment_selections();
@@ -447,6 +688,25 @@ impl Render for EditorView {
                                 let row_selection =
                                     row_local_selection(&selection, row_start, row_end)
                                         .and_then(|s| clip_to_subrange(&s, &sub_range));
+                                // Caret column within this sub-line. A caret
+                                // sitting exactly on a sub boundary would
+                                // match two sub-lines (end of one, start of
+                                // the next) — draw it only on the row's last
+                                // sub-line, which is where a line-end caret
+                                // belongs anyway.
+                                let caret_col = caret_offset.and_then(|caret| {
+                                    let local = caret.checked_sub(row_start)?;
+                                    let sub_start = sub_range.start as usize;
+                                    let sub_end = sub_range.end as usize;
+                                    let is_last_sub = sub_range.end as usize == row_len;
+                                    if local >= sub_start
+                                        && (local < sub_end || (local == sub_end && is_last_sub))
+                                    {
+                                        Some(local - sub_start)
+                                    } else {
+                                        None
+                                    }
+                                });
                                 let indent_px = if sub > 0 {
                                     char_width * (cache.indent_chars(buffer_row) as f32)
                                 } else {
@@ -469,6 +729,9 @@ impl Render for EditorView {
                                     comment_selected,
                                     comment_hover_row: interaction.comment_hover_row.get(),
                                     comment_drag: interaction.comment_drag.get(),
+                                    caret_col,
+                                    char_width,
+                                    tab_width: state.tab_width(),
                                 };
                                 render_line(
                                     meta,
@@ -583,8 +846,6 @@ impl Render for EditorView {
             })
     }
 }
-
-/// Minimum thumb size so a huge file never shrinks a scrollbar to invisibility.
 const MIN_SCROLLBAR_THUMB: Pixels = px(24.0);
 
 /// Thumb length for a scrollbar axis: viewport share of total content,
@@ -691,10 +952,9 @@ pub(crate) fn render_h_scrollbar(
                 }),
         )
 }
-
 /// Clip the whole-buffer selection range to `row_start..row_end`, in row-local
 /// char coords. `None` if the row has no overlap with the selection.
-fn row_local_selection(
+pub(crate) fn row_local_selection(
     selection: &Range<usize>,
     row_start: usize,
     row_end: usize,
@@ -706,6 +966,12 @@ fn row_local_selection(
     } else {
         None
     }
+}
+
+pub(crate) fn resolve_color(span: &StyledSpan) -> Hsla {
+    span.color
+        .map(|(r, g, b)| rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32).into())
+        .unwrap_or_else(|| color_for(span.capture))
 }
 
 pub(crate) fn color_for(capture: Capture) -> Hsla {
@@ -726,23 +992,23 @@ const SELECTION_BG: u32 = 0x3b82f680;
 /// Bundles a rendered row's positional bookkeeping (as opposed to its
 /// content/styling) into one value — keeps `render_line`'s own argument
 /// count from creeping past what a single glance can take in.
-struct RowMeta {
-    row: u32,
-    show_line_number: bool,
-    col_offset: u32,
+pub(crate) struct RowMeta {
+    pub(crate) row: u32,
+    pub(crate) show_line_number: bool,
+    pub(crate) col_offset: u32,
     /// Where this row's text content starts, x-wise (gutter + padding).
-    content_x: Pixels,
+    pub(crate) content_x: Pixels,
     /// Extra left padding for a wrapped continuation line, so it aligns
     /// under its own indent instead of restarting at column 0. `0` for a
     /// row's first sub-line.
-    indent_px: Pixels,
+    pub(crate) indent_px: Pixels,
     /// Gutter's left edge in row-local coordinates — moves with the row
     /// under h-scroll like everything else (the container clips it, the
     /// gutter isn't pinned or hidden).
-    gutter_pad: Pixels,
+    pub(crate) gutter_pad: Pixels,
     /// Gutter width (`w_10`); text starts at `gutter_pad + gutter_w + gap`
     /// = `content_x` in row coordinates.
-    gutter_w: Pixels,
+    pub(crate) gutter_w: Pixels,
     /// `Some(content width)` while h-scroll is active (the `content_width`
     /// local in `Render`), `None` otherwise. The list itself is
     /// *viewport*-width when h-scrolling (see `Render`'s comment on why —
@@ -754,15 +1020,21 @@ struct RowMeta {
     /// its real width (never re-wrapped at the viewport edge), and the
     /// width gpui measures for its scroll range matches `content_width`,
     /// trailing pad included.
-    row_width: Option<Pixels>,
-    comment_enabled: bool,
+    pub(crate) row_width: Option<Pixels>,
+    pub(crate) comment_enabled: bool,
     /// Inside a persisted comment range (highlighted after the drag ends).
-    comment_selected: bool,
-    comment_hover_row: Option<u32>,
-    comment_drag: Option<u32>,
+    pub(crate) comment_selected: bool,
+    pub(crate) comment_hover_row: Option<u32>,
+    pub(crate) comment_drag: Option<u32>,
+    /// Caret column within this sub-line's chars, when the caret is on this
+    /// sub-line and the editor is focused + editable (empty selection).
+    pub(crate) caret_col: Option<usize>,
+    /// Measured monospace glyph advance — drives the caret's x position.
+    pub(crate) char_width: Pixels,
+    pub(crate) tab_width: u32,
 }
 
-fn render_line(
+pub(crate) fn render_line(
     meta: RowMeta,
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
@@ -783,6 +1055,9 @@ fn render_line(
         comment_selected,
         comment_hover_row,
         comment_drag,
+        caret_col,
+        char_width,
+        tab_width,
     } = meta;
     let line_no = if show_line_number {
         format!("{:>4}", row + 1)
@@ -806,6 +1081,22 @@ fn render_line(
     let move_ = interaction.clone();
     let move_font = font.clone();
     let move_text = down_text.clone();
+
+    // Caret: a 2px bar at the head column, tab stops honored, painted after
+    // the text so it's visible over any run/selection background. No blink
+    // in v1 — always on while the editor is focused.
+    let caret_el = caret_col.map(|cc| {
+        let prefix: String = text.chars().take(cc).collect();
+        let caret_x = text_display_width(&prefix, char_width, tab_width);
+        div()
+            .absolute()
+            .top_0()
+            .left(indent_px + caret_x)
+            .w(px(2.0))
+            .h_full()
+            .bg(rgba(0xffffffcc))
+            .rounded_xs()
+    });
 
     let row_el = div()
         .id(("editor-line", row as usize))
@@ -861,6 +1152,7 @@ fn render_line(
                 .ml(content_x)
                 .pl(indent_px)
                 .child(render_spans(text, runs, selection))
+                .children(caret_el)
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
                     let scroll_x = (-down.h_handle.offset().x).max(px(0.));
@@ -871,6 +1163,9 @@ fn render_line(
                     down.drag_anchor.set(Some(offset));
                     down.last_head.set(None);
                     down.selecting.set(true);
+                    // A click is caret placement, not keyboard extension.
+                    down.key_anchor.set(None);
+                    down.goal_col.set(None);
                     down.state.update(cx, |state, cx| {
                         state.set_selection(offset..offset);
                         cx.notify();

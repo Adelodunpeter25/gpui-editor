@@ -58,3 +58,100 @@ fn slice_text_clamps_out_of_bounds_ranges() {
     assert_eq!(b.slice_text(0..100), "hi");
     assert_eq!(b.slice_text(50..100), "");
 }
+
+#[test]
+fn same_group_edits_coalesce_into_one_undo() {
+    let mut b = Buffer::from_text("ab");
+    b.edit_grouped(
+        &[Edit {
+            range: 2..2,
+            text: "c".into(),
+        }],
+        Some(1),
+    );
+    b.edit_grouped(
+        &[Edit {
+            range: 3..3,
+            text: "d".into(),
+        }],
+        Some(1),
+    );
+    assert_eq!(b.text().to_string(), "abcd");
+    // One undo reverts the whole run, not just the last keystroke.
+    b.undo();
+    assert_eq!(b.text().to_string(), "ab");
+    assert!(b.can_redo());
+    b.redo();
+    assert_eq!(b.text().to_string(), "abcd");
+}
+
+#[test]
+fn different_groups_undo_separately() {
+    let mut b = Buffer::from_text("");
+    b.edit_grouped(
+        &[Edit {
+            range: 0..0,
+            text: "a".into(),
+        }],
+        Some(1),
+    );
+    b.edit_grouped(
+        &[Edit {
+            range: 1..1,
+            text: "b".into(),
+        }],
+        Some(2),
+    );
+    b.undo();
+    assert_eq!(b.text().to_string(), "a");
+    b.undo();
+    assert_eq!(b.text().to_string(), "");
+}
+
+#[test]
+fn a_new_run_clears_redo() {
+    let mut b = Buffer::from_text("x");
+    b.edit(&[Edit {
+        range: 1..1,
+        text: "a".into(),
+    }]);
+    b.undo();
+    assert!(b.can_redo());
+    b.edit_grouped(
+        &[Edit {
+            range: 1..1,
+            text: "b".into(),
+        }],
+        Some(7),
+    );
+    b.edit_grouped(
+        &[Edit {
+            range: 2..2,
+            text: "c".into(),
+        }],
+        Some(7),
+    );
+    assert!(!b.can_redo());
+}
+
+#[test]
+fn backspace_run_coalesces() {
+    let mut b = Buffer::from_text("abcd");
+    b.edit_grouped(
+        &[Edit {
+            range: 3..4,
+            text: "".into(),
+        }],
+        Some(1),
+    );
+    b.edit_grouped(
+        &[Edit {
+            range: 2..3,
+            text: "".into(),
+        }],
+        Some(1),
+    );
+    assert_eq!(b.text().to_string(), "ab");
+    b.undo();
+    assert_eq!(b.text().to_string(), "abcd");
+}

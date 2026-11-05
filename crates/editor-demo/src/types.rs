@@ -36,7 +36,8 @@ pub(crate) struct DemoApp {
 impl DemoApp {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let registry = LanguageRegistry::builtin();
-        let state = cx.new(|_| EditorState::readonly(INITIAL_SAMPLE, registry.for_name("rust")));
+        // Editable: this demo exercises edit mode (typing, caret, undo).
+        let state = cx.new(|_| EditorState::editable(INITIAL_SAMPLE, registry.for_name("rust")));
         let comment_target = Rc::new(RefCell::new(None));
         let comment_target_for_handler = comment_target.clone();
         let view = cx.new(|cx| EditorView::new(&state, cx));

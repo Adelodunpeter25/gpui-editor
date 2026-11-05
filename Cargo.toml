@@ -14,6 +14,6 @@ syntax = { path = "crates/syntax" }
 diff = { path = "crates/diff" }
 editor-ui = { path = "crates/editor-ui" }
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed" }
-gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 ropey = "1.6"
 similar = "2.7"

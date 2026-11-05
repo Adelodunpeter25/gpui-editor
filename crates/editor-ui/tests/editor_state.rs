@@ -195,3 +195,144 @@ fn comment_selections_persist_and_dedupe() {
     state.set_comment_selections(vec![second]);
     assert_eq!(state.comment_selections(), &[second]);
 }
+
+// -- edit mode (M2) ---------------------------------------------------------
+
+/// `type_text` updates the buffer, bumps the version, and collapses the
+/// selection onto the end of the inserted text.
+#[gpui::test]
+fn typing_updates_buffer_selection_and_version(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    state.update(cx, |s, cx| s.type_text(5..5, "!", cx));
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_text(0), "hello!");
+        assert_eq!(s.selection().range, 6..6);
+        assert_eq!(s.version(), 1);
+    });
+}
+
+/// Typing into a non-empty selection replaces it.
+#[gpui::test]
+fn typing_replaces_the_selection(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello world", None)));
+    state.update(cx, |s, cx| {
+        s.set_selection(5..11);
+        s.type_text(5..11, " gpui", cx);
+    });
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_text(0), "hello gpui");
+        assert_eq!(s.selection().range, 10..10);
+    });
+}
+
+/// Readonly ignores both edit primitives — content, version, selection.
+#[gpui::test]
+fn readonly_ignores_replace_range_and_type_text(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::readonly("hello", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(5..5, "!", cx);
+        s.replace_range(0..5, "bye", cx);
+    });
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_text(0), "hello");
+        assert_eq!(s.version(), 0);
+    });
+}
+
+#[gpui::test]
+fn undo_redo_round_trips_a_typing_run(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(5..5, " ", cx);
+        s.type_text(6..6, "world", cx);
+    });
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "hello world"));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| {
+        // Both typing keystrokes landed inside one 500ms run: one undo.
+        assert_eq!(s.line_text(0), "hello");
+        assert!(s.can_redo());
+    });
+    state.update(cx, |s, cx| s.redo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "hello world"));
+}
+
+/// A structural edit (`replace_range`) between keystrokes closes the typing
+/// run, so undo stops there instead of reverting through it.
+#[gpui::test]
+fn structural_edit_closes_the_typing_run(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(5..5, "a", cx);
+        s.replace_range(0..1, "H", cx); // structural: own undo entry
+        s.type_text(6..6, "b", cx);
+    });
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "Helloa"));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.line_text(0), "helloa"));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_text(0), "hello");
+        assert!(!s.can_undo());
+    });
+}
+
+/// Typing past the end of a line grows the widest-row width (content-width
+/// cache is keyed by buffer version, so h-scroll range follows edits), and
+/// undo shrinks it back.
+#[gpui::test]
+fn editing_grows_and_undo_shrinks_max_line_width(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("ab\nabc", None)));
+    let cw = px(10.0);
+    state.read_with(cx, |s, _| assert_eq!(f32::from(s.max_line_width(cw)), 30.0));
+    let v0 = state.read_with(cx, |s, _| s.version());
+    state.update(cx, |s, cx| {
+        s.set_selection(6..6);
+        s.type_text(6..6, "abcdef", cx);
+    });
+    state.read_with(cx, |s, _| {
+        assert_eq!(f32::from(s.max_line_width(cw)), 90.0);
+        assert_ne!(s.version(), v0);
+    });
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(f32::from(s.max_line_width(cw)), 30.0));
+}
+
+// -- newline_edit (pure helper) ---------------------------------------------
+
+#[test]
+fn newline_edit_splits_mid_line_without_indent() {
+    let s = EditorState::editable("abc", None);
+    let (range, text) = s.newline_edit(1);
+    assert_eq!(range, 1..1);
+    assert_eq!(text, "\n");
+}
+
+#[test]
+fn newline_edit_at_line_end_inserts_after_the_newline() {
+    let s = EditorState::editable("abc\nxyz", None);
+    // Caret at offset 3 = visual end of line 0 (before its '\n').
+    let (range, _text) = s.newline_edit(3);
+    assert_eq!(range, 4..4);
+}
+
+#[test]
+fn newline_edit_auto_indents_after_an_opener() {
+    let s = EditorState::editable("    foo {\n}", None);
+    let (range, text) = s.newline_edit(9); // end of "    foo {"
+    assert_eq!(range, 10..10);
+    assert_eq!(text, "\n        "); // base 4 + one 4-space level
+}
+
+// -- offset helpers -----------------------------------------------------------
+
+#[test]
+fn line_end_offset_excludes_the_newline() {
+    let s = EditorState::editable("ab\ncd\n", None);
+    assert_eq!(s.line_end_offset(0), 2);
+    assert_eq!(s.line_end_offset(1), 5);
+    // Last line ("" after the trailing newline): end of text.
+    assert_eq!(s.line_end_offset(2), 6);
+    assert_eq!(s.len_chars(), 6);
+}

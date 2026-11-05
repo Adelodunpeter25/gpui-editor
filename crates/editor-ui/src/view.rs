@@ -14,7 +14,7 @@ use std::rc::Rc;
 use crate::state::EditorState;
 use crate::types::{CommentTarget, FontConfig};
 use crate::wrap::WrapCache;
-use crate::{Copy, SelectAll};
+use crate::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
 pub struct EditorView {
     pub(crate) state: Entity<EditorState>,
@@ -57,6 +57,15 @@ pub struct EditorView {
     /// `render` (rebuilds it) and row mouse handlers (read it, to resolve a
     /// click's visual row back to a buffer offset) need access.
     pub(crate) wrap_cache: Rc<RefCell<WrapCache>>,
+    /// Anchor end for keyboard selection extension (shift + motion): where
+    /// the selection started before the current keyboard drag, so the head
+    /// moves while the anchor stays put. Cleared by any non-shift motion,
+    /// click, or edit.
+    pub(crate) key_anchor: Rc<Cell<Option<usize>>>,
+    /// Column the caret last aimed at for vertical motion (up/down), so
+    /// crossing a shorter line doesn't drift horizontally. In char columns;
+    /// cleared by horizontal motion, clicks, and edits.
+    pub(crate) goal_col: Rc<Cell<Option<u32>>>,
 }
 
 impl EditorView {
@@ -77,7 +86,22 @@ impl EditorView {
             content_width_cache: Rc::new(RefCell::new(None)),
             viewport_width: Rc::new(Cell::new(px(0.))),
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
+            key_anchor: Rc::new(Cell::new(None)),
+            goal_col: Rc::new(Cell::new(None)),
         }
+    }
+
+    /// Focus the editor so keyboard input (typing, motion, undo/redo)
+    /// reaches it. Hosts call this after inserting the view, or users can
+    /// just click into it.
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.focus_handle, cx);
+    }
+
+    /// Clone of this view's focus handle, for hosts that focus it via
+    /// `window.focus` themselves.
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
     }
 
     pub(crate) fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
@@ -134,6 +158,59 @@ impl EditorView {
         self.state.update(cx, |state, _| state.select_all());
         cx.notify();
     }
+
+    pub(crate) fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.undo(cx));
+        self.clear_motion_caches();
+        cx.notify();
+    }
+
+    pub(crate) fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| state.redo(cx));
+        self.clear_motion_caches();
+        cx.notify();
+    }
+
+    /// Cut: copy the selection to the clipboard, then delete it. No-op with
+    /// an empty selection (no clipboard churn, no undo entry).
+    pub(crate) fn cut(&mut self, _: &Cut, _window: &mut Window, cx: &mut Context<Self>) {
+        let edited = self.state.update(cx, |state, cx| {
+            let text = state.selected_text();
+            if text.is_empty() {
+                return false;
+            }
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            let range = state.selection().range.clone();
+            state.replace_range(range, "", cx);
+            true
+        });
+        if edited {
+            self.clear_motion_caches();
+            cx.notify();
+        }
+    }
+
+    /// Paste: replace the selection (or insert at the caret) with clipboard
+    /// text. No-op with an empty clipboard.
+    pub(crate) fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            let range = state.selection().range.clone();
+            state.replace_range(range, &text, cx);
+        });
+        self.clear_motion_caches();
+        cx.notify();
+    }
+
+    pub(crate) fn clear_motion_caches(&mut self) {
+        self.key_anchor.set(None);
+        self.goal_col.set(None);
+    }
 }
 
 /// Geometry for a host-rendered card attached below a comment range.
@@ -172,4 +249,7 @@ pub(crate) struct RowInteraction {
     pub(crate) h_handle: ScrollHandle,
     pub(crate) comment_hover_row: Rc<Cell<Option<u32>>>,
     pub(crate) comment_drag: Rc<Cell<Option<u32>>>,
+    /// Cleared on click (a click is caret placement, not keyboard extension).
+    pub(crate) key_anchor: Rc<Cell<Option<usize>>>,
+    pub(crate) goal_col: Rc<Cell<Option<u32>>>,
 }

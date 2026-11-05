@@ -10,6 +10,7 @@
 use edit_buffer::{Buffer, Edit, Point};
 use gpui::{px, AppContext, Context, Pixels};
 use std::ops::Range;
+use std::time::{Duration, Instant};
 use syntax::{HighlightSpan, Language, ThemePreset};
 
 use crate::chars_display_width;
@@ -18,6 +19,12 @@ use crate::types::{CommentTarget, FontConfig, IndentOptions, Mode, SearchState, 
 /// Below this size, rehighlight runs synchronously inline rather than via
 /// `cx.background_spawn` — see `EditorState::rehighlight_from`.
 const SYNC_HIGHLIGHT_THRESHOLD: usize = 64_000;
+
+/// Consecutive typing edits (`type_text`) within this window coalesce into
+/// one undo entry, so undo works per typing run instead of per keystroke.
+/// Any structural edit (`replace_range`, `set_text`, undo/redo) closes the
+/// run.
+const TYPE_GROUP_WINDOW: Duration = Duration::from_millis(500);
 
 pub struct EditorState {
     buffer: Buffer,
@@ -39,6 +46,13 @@ pub struct EditorState {
     /// removes the comment.
     comment_selections: Vec<CommentTarget>,
     font: FontConfig,
+    /// Current typing-run undo group (`type_text` only). `None` after any
+    /// structural edit, so the next keystroke starts a fresh undo entry.
+    typing_group: Option<u64>,
+    /// Allocator for typing-group ids.
+    next_group: u64,
+    /// When the last typing edit landed — decides run continuation.
+    last_typing: Option<Instant>,
     // Row -> highlight spans clipped to that row (rebuilt on edit/highlight).
     // M1 moves this to a shaped-line cache keyed by (row, version).
     // `pub(crate)`: lib.rs's render path reads this directly per visible row.
@@ -72,6 +86,9 @@ impl EditorState {
             comment_target_handler: None,
             comment_selections: Vec::new(),
             font: FontConfig::default(),
+            typing_group: None,
+            next_group: 0,
+            last_typing: None,
             row_spans: Vec::new(),
         };
         // Construction has no `Context<Self>` yet (these constructors are
@@ -123,6 +140,16 @@ impl EditorState {
 
     pub fn tab_width(&self) -> u32 {
         self.indent.tab_width
+    }
+
+    /// Indent options (tab width + hard-tabs flag), for Tab insertion.
+    pub fn indent_options(&self) -> IndentOptions {
+        self.indent
+    }
+
+    /// Total buffer length in chars (selection clamping, caret bounds).
+    pub fn len_chars(&self) -> usize {
+        self.buffer.len_chars()
     }
 
     pub fn font(&self) -> &FontConfig {
@@ -237,13 +264,96 @@ impl EditorState {
 
     /// M2 path: insert at char offset. No-op in readonly.
     pub fn insert(&mut self, offset: usize, text: &str, cx: &mut Context<Self>) {
+        self.replace_range(offset..offset, text, cx);
+    }
+
+    /// Structural edit: replace `range` with `text` as its own undo entry
+    /// (paste, cut, programmatic edits). Collapses the selection to the end
+    /// of the inserted text. No-op in readonly.
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.replace_impl(range, text, false, cx);
+    }
+
+    /// Typing edit: same as `replace_range`, but consecutive calls within
+    /// `TYPE_GROUP_WINDOW` coalesce into one undo entry. The key handler
+    /// routes printable chars, Backspace, and Delete here.
+    pub fn type_text(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.replace_impl(range, text, true, cx);
+    }
+
+    fn replace_impl(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        typing: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_readonly() {
             return;
         }
-        self.buffer.edit(&[Edit {
-            range: offset..offset,
-            text: text.to_string(),
-        }]);
+        let group = if typing {
+            let now = Instant::now();
+            let continues = match (self.typing_group, self.last_typing) {
+                (Some(_), Some(last)) => now.duration_since(last) < TYPE_GROUP_WINDOW,
+                _ => false,
+            };
+            let group = if continues {
+                self.typing_group
+            } else {
+                let g = self.next_group;
+                self.next_group += 1;
+                Some(g)
+            };
+            self.typing_group = group;
+            self.last_typing = Some(now);
+            group
+        } else {
+            self.typing_group = None;
+            self.last_typing = None;
+            None
+        };
+        let clamped_start = range.start.min(self.buffer.len_chars());
+        let inserted = text.chars().count();
+        let caret = clamped_start + inserted;
+        self.buffer
+            .edit_grouped(&[Edit { range, text: text.to_string() }], group);
+        // Collapse onto the caret just past the inserted text.
+        self.selection = Selection {
+            range: caret..caret,
+        };
+        self.rehighlight(cx);
+        self.rerun_search();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.buffer.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.buffer.can_redo()
+    }
+
+    /// Undo one edit group (typing run / structural edit). No-op in readonly
+    /// (history is disabled there anyway); leaves the caret at the old
+    /// selection start, clamped to the restored buffer.
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        if self.buffer.undo().is_some() {
+            self.after_history_move(cx);
+        }
+    }
+
+    /// Redo the most recently undone edit group.
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        if self.buffer.redo().is_some() {
+            self.after_history_move(cx);
+        }
+    }
+
+    fn after_history_move(&mut self, cx: &mut Context<Self>) {
+        self.typing_group = None;
+        self.last_typing = None;
+        let head = self.selection.range.start.min(self.buffer.len_chars());
+        self.selection = Selection { range: head..head };
         self.rehighlight(cx);
         self.rerun_search();
     }
@@ -276,9 +386,39 @@ impl EditorState {
         }
     }
 
+    /// Char offset of the end of `row`'s text, excluding its trailing newline.
+    pub fn line_end_offset(&self, row: u32) -> usize {
+        if row + 1 < self.line_count() {
+            self.row_end_offset(row) - 1
+        } else {
+            self.buffer.len_chars()
+        }
+    }
+
+    /// The edit Enter performs with the caret at `head`: range + replacement
+    /// text (`"\n" + auto-indent`). Splitting mid-line replaces nothing — it
+    /// inserts; a caret sitting at a line's visual end (just before its
+    /// newline) inserts *after* that newline, so the current line isn't
+    /// split by an empty one. Pure helper, exposed for tests.
+    pub fn newline_edit(&self, head: usize) -> (Range<usize>, String) {
+        let point = self.offset_to_point(head);
+        let indent = self.indent_for_newline(point.row);
+        if head == self.line_end_offset(point.row) && point.row + 1 < self.line_count() {
+            // At a line's visual end: insert on the far side of its newline.
+            (head + 1..head + 1, format!("\n{indent}"))
+        } else {
+            (head..head, format!("\n{indent}"))
+        }
+    }
+
     /// Char offset for a (row, col) point, clamped by the buffer.
     pub fn point_to_offset(&self, point: Point) -> usize {
         self.buffer.point_to_offset(point)
+    }
+
+    /// (row, col) point for a char offset.
+    pub fn offset_to_point(&self, offset: usize) -> Point {
+        self.buffer.offset_to_point(offset)
     }
 
     /// Widest buffer row in pixels (tab stops honored, capped at the same
