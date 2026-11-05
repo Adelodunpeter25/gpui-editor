@@ -51,16 +51,10 @@ impl Render for EditorView {
 
         let char_width = measure_char_width(&self.char_width, &font, window);
 
-        // Widest-row text width, cached per (buffer version, font). The scan
-        // is O(total chars), so beyond not running per frame (the cache),
-        // it also only runs at all when wrap is off — wrapped text never
-        // needs a horizontal range, so there's nothing to size for. This is
-        // pure arithmetic (no shaping), so even a full-buffer scan is cheap;
-        // if a pathologically huge file ever makes it show up in profiling,
-        // move it to a background task the same way `rehighlight_from` does.
-        // (Bound to a local first: the `Ref` guard in a match scrutinee
-        // would otherwise still be alive when the recompute arm takes
-        // `borrow_mut`.)
+        // Widest-row text width, cached per (buffer version, font); wrap-on
+        // skips the scan entirely (wrapped text needs no horizontal sizing).
+        // Bound to a local first: a `Ref` in the match scrutinee would
+        // otherwise still be alive when the recompute arm takes `borrow_mut`.
         let max_text_px = if wrap_enabled {
             px(0.)
         } else {
@@ -98,31 +92,17 @@ impl Render for EditorView {
         let visual_row_count = self.wrap_cache.borrow().visual_row_count();
 
         let content_x = window.rem_size() * CONTENT_X_REM;
-        // Horizontal scroll rides the *same* handle/hitbox as the list's own
-        // vertical scroll (its `base_handle`, which already carries a full
-        // x/y offset) instead of a second, independently-scrollable div
-        // wrapped around it. Two separate scrollable regions each install
-        // their own wheel listener and gpui dispatches both (nesting isn't
-        // exclusive) — the inner one has no idea a horizontal gesture is in
-        // progress on the outer one, so a trackpad swipe's small residual
-        // y noise (real hardware never reports an exactly-zero cross-axis
-        // delta) gets scrolled as if it were an intentional vertical flick.
-        // One handle + `restrict_scroll_to_axis` (set below, only when
-        // h-scroll is actually active) means gpui's own axis-exclusivity
-        // logic runs once, in one place, on the real gesture.
+        // H-scroll shares the list's one scroll handle/hitbox: gpui dispatches
+        // nested scrollables' wheel events non-exclusively, so a second
+        // scrollable div would turn a trackpad swipe's residual y noise into
+        // vertical scroll. `restrict_scroll_to_axis` (set below) axis-locks
+        // the one gesture instead.
         let base_handle = self.scroll_handle.0.borrow().base_handle.clone();
-        // Only the widest line actually overflowing the viewport earns the
-        // horizontal-scroll layout — a short file (or a long file where
-        // every line still fits) renders as a plain, non-scrollable list,
-        // same as before this feature existed. This is what makes h-scroll
-        // "only work when needed" instead of wrapping every file in the
-        // extra gutter-hiding machinery below.
+        // Only a line that actually overflows the viewport earns h-scroll.
         let can_h_scroll = !wrap_enabled && content_x + max_text_px > measured_width;
         if !can_h_scroll {
-            // Drop any stale horizontal offset from a previous file/width
-            // that *did* scroll, so a later transition back to h-scroll (or
-            // just re-measuring at a wider viewport) doesn't start "pre-
-            // scrolled" with no visible way to have caused it.
+            // Drop a stale horizontal offset so we don't come back
+            // pre-scrolled with nothing visible to have caused it.
             let y = base_handle.offset().y;
             base_handle.set_offset(point(px(0.), y));
         }
@@ -136,16 +116,11 @@ impl Render for EditorView {
         let rem = window.rem_size();
         let gutter_pad = rem * 0.75;
         let gutter_w = rem * 2.5;
-        // The gutter is plain row content — it stays mounted and rides the
-        // row's translation as the container scrolls right, so the
-        // container's own left edge clips it naturally as it walks out of
-        // view. No conditional unmount (which read as the line numbers
-        // "vanishing" at the first scrolled pixel) and no overlay pinned
-        // over sliding text: the whole row scrolls as one unit. Render
-        // doesn't read the scroll offset for this — the rows' own
-        // hit-testers read it live via `h_handle`.
-        // Bottom bar visibility, from last frame's prepaint — same staleness
-        // contract as the existing vertical bar's `is_scrollable()` check.
+        // The gutter is plain row content: it rides the row's translation
+        // and the container's left edge clips it, so the whole row scrolls
+        // as one unit (rows' hit-testers read the offset live via `h_handle`).
+        // Bar visibility, from last frame's prepaint — same staleness
+        // contract as the vertical bar's `is_scrollable()` check.
         let h_scrollable = can_h_scroll && base_handle.max_offset().x > px(0.);
 
         let viewport_height = self.viewport_height.clone();
@@ -386,33 +361,13 @@ impl Render for EditorView {
                 .h(list_height);
 
                 if can_h_scroll {
-                    // `Unconstrained` — not just poking `overflow.x` — is
-                    // load-bearing. It's what tells `uniform_list` to measure
-                    // a row for its *content* width instead of deriving
-                    // content from the list's own bounds. The list is
-                    // viewport-width (the `w_full()` below, with rows
-                    // carrying the content width instead — see
-                    // `RowMeta::row_width`), so without this gpui computes a
-                    // horizontal scroll range of exactly zero and its
-                    // per-frame clamp (prepaint, before anything paints)
-                    // forces every wheel-driven x offset straight back to 0:
-                    // a horizontal gesture reads as input but moves nothing,
-                    // and the h-scrollbar never appears (`max_offset().x`
-                    // stays 0) — the "horizontal scroll doesn't work"
-                    // regression this replaced.
-                    // The method also sets `overflow.x = Scroll`, the flag
-                    // the wheel listener needs to accept x deltas at all.
-                    //
-                    // `restrict_scroll_to_axis` is poked rather than
-                    // chained because it's a `StatefulInteractiveElement`
-                    // method, which `UniformList` doesn't implement. Both
-                    // are only turned on when h-scroll is actually
-                    // possible, so a normal file's vertical-only scrolling
-                    // is completely unaffected: each gesture locks to
-                    // whichever axis it's predominantly moving on, on the
-                    // one handle/listener pair (see the `base_handle`
-                    // comment above), so a trackpad swipe can't bleed its
-                    // cross-axis residue into vertical scroll.
+                    // Rows must size to their content width, not the list's
+                    // viewport width — otherwise gpui clamps the x offset to
+                    // zero and h-scroll never moves. Poked (not chained)
+                    // because `UniformList` isn't a
+                    // `StatefulInteractiveElement`; both settings apply only
+                    // when h-scroll is active, so vertical-only files are
+                    // unaffected.
                     list = list.with_horizontal_sizing_behavior(
                         ListHorizontalSizingBehavior::Unconstrained,
                     );
