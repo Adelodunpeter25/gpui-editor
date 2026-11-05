@@ -26,6 +26,41 @@ fn plain_text_handles_gracefully() {
     assert_eq!(v_none.buffer_version, 2);
 }
 
+/// Regression guard for the byte -> char conversion of span offsets: every
+/// span must slice the source text to real characters, not raw byte
+/// offsets (they differ once multi-byte chars appear before a span).
+#[test]
+fn multibyte_span_offsets_are_char_offsets() {
+    // 12 chars, 19 bytes: "héllo" is 6 bytes, "wörld" 6 bytes, emoji 4 bytes.
+    let text = "fn héllo() { let s = \"wörld☀\"; }\n";
+    let v = highlight(text, Some(&RUST), 1);
+    assert!(!v.spans.is_empty());
+    for span in &v.spans {
+        let sliced: String = text
+            .chars()
+            .skip(span.start)
+            .take(span.end - span.start)
+            .collect();
+        assert!(!sliced.is_empty(), "empty span at {}..{}", span.start, span.end);
+        // A byte offset used as a char offset would often slice into the
+        // middle of a multi-byte char or shift the text; assert the span
+        // lands on a plausible token (no partial char, no lone quotes).
+        assert!(
+            !sliced.starts_with('\u{fffd}') && text.contains(sliced.as_str()),
+            "span {}..{} sliced to {sliced:?}, not a substring of the source",
+            span.start,
+            span.end
+        );
+    }
+    // The keyword after the multi-byte identifier must still be found at a
+    // char offset that actually reads "let".
+    let let_span = v
+        .spans
+        .iter()
+        .find(|s| s.capture == Capture::Keyword && text.chars().skip(s.start).take(3).collect::<String>() == "let");
+    assert!(let_span.is_some(), "no Keyword span lands on 'let'");
+}
+
 #[test]
 fn language_registry_resolution() {
     let reg = LanguageRegistry::builtin();

@@ -9,6 +9,7 @@
 
 use edit_buffer::{Buffer, Edit, Point};
 use gpui::{px, AppContext, Context, Pixels};
+use std::cell::RefCell;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 use syntax::{HighlightSpan, Language, ThemePreset};
@@ -57,6 +58,27 @@ pub struct EditorState {
     // M1 moves this to a shaped-line cache keyed by (row, version).
     // `pub(crate)`: lib.rs's render path reads this directly per visible row.
     pub(crate) row_spans: Vec<Vec<StyledSpan>>,
+    /// Per-row display widths for `max_line_width` (h-scroll sizing),
+    /// spliced incrementally per edit so typing costs O(rows) instead of a
+    /// full-buffer char scan. `None` = needs a full scan (first read, font
+    /// or tab-width change, or after undo/redo where the affected rows
+    /// aren't tracked). `RefCell` because reads (`max_line_width`) take
+    /// `&self` while filling the cache.
+    row_widths: RefCell<Option<RowWidthCache>>,
+}
+
+/// Identity of a `RowWidthCache`: a different char width (font change) or
+/// tab width changes every row's display width, voiding the cache.
+#[derive(Clone, Copy, PartialEq)]
+struct RowWidthKey {
+    char_width: f32,
+    tab_width: u32,
+}
+
+struct RowWidthCache {
+    key: RowWidthKey,
+    /// Display width of each buffer row, `widths[row]`.
+    widths: Vec<Pixels>,
 }
 
 impl EditorState {
@@ -90,6 +112,7 @@ impl EditorState {
             next_group: 0,
             last_typing: None,
             row_spans: Vec::new(),
+            row_widths: RefCell::new(None),
         };
         // Construction has no `Context<Self>` yet (these constructors are
         // plain functions, not `cx.new(|cx| ...)` closures themselves) — a
@@ -257,6 +280,7 @@ impl EditorState {
             range: 0..len,
             text: text.to_string(),
         }]);
+        *self.row_widths.borrow_mut() = None;
         self.selection = Selection::default();
         self.rehighlight_from(text, cx);
         self.rerun_search();
@@ -313,10 +337,15 @@ impl EditorState {
             None
         };
         let clamped_start = range.start.min(self.buffer.len_chars());
+        let clamped_end = range.end.min(self.buffer.len_chars());
+        let start_row = self.buffer.offset_to_point(clamped_start).row;
+        let end_row_old = self.buffer.offset_to_point(clamped_end).row;
         let inserted = text.chars().count();
         let caret = clamped_start + inserted;
         self.buffer
             .edit_grouped(&[Edit { range, text: text.to_string() }], group);
+        let end_row_new = self.buffer.offset_to_point(caret).row;
+        self.update_row_widths(start_row, end_row_old, end_row_new);
         // Collapse onto the caret just past the inserted text.
         self.selection = Selection {
             range: caret..caret,
@@ -352,6 +381,9 @@ impl EditorState {
     fn after_history_move(&mut self, cx: &mut Context<Self>) {
         self.typing_group = None;
         self.last_typing = None;
+        // Undo/redo can shrink or shift any rows; the affected range isn't
+        // tracked here, so let the next read do a full width scan.
+        *self.row_widths.borrow_mut() = None;
         let head = self.selection.range.start.min(self.buffer.len_chars());
         self.selection = Selection { range: head..head };
         self.rehighlight(cx);
@@ -421,23 +453,56 @@ impl EditorState {
         self.buffer.offset_to_point(offset)
     }
 
-    /// Widest buffer row in pixels (tab stops honored, capped at the same
-    /// `MAX_ROW_RENDER_CHARS` the view paints) — drives horizontal-scroll
-    /// content width so the scroll range matches what's actually rendered.
-    /// Zero-copy: scans rope slices, no per-line allocation.
+    /// Widest row's display width (h-scroll sizing). Served from the
+    /// per-row width cache — O(rows) max-scan — once built; edits splice
+    /// their affected rows in `replace_impl` instead of rescanning the
+    /// whole buffer per keystroke.
     pub fn max_line_width(&self, char_width: Pixels) -> Pixels {
-        let mut max = px(0.);
-        for row in 0..self.line_count() {
-            let w = chars_display_width(
-                self.buffer.line_slice(row).chars(),
-                char_width,
-                self.indent.tab_width,
-            );
-            if w > max {
-                max = w;
+        let key = RowWidthKey {
+            char_width: char_width.into(),
+            tab_width: self.indent.tab_width,
+        };
+        {
+            let cache = self.row_widths.borrow();
+            if let Some(c) = cache.as_ref() {
+                if c.key == key {
+                    return c.widths.iter().copied().fold(px(0.), |a, w| w.max(a));
+                }
             }
         }
+        let widths: Vec<Pixels> = (0..self.line_count())
+            .map(|row| self.row_width(row, key))
+            .collect();
+        let max = widths.iter().copied().fold(px(0.), |a, w| w.max(a));
+        *self.row_widths.borrow_mut() = Some(RowWidthCache { key, widths });
         max
+    }
+
+    fn row_width(&self, row: u32, key: RowWidthKey) -> Pixels {
+        chars_display_width(
+            self.buffer.line_slice(row).chars(),
+            px(key.char_width),
+            key.tab_width,
+        )
+    }
+
+    /// Re-measure only the rows an edit touched (`start_row..=end_row_old`
+    /// became `start_row..=end_row_new`), shifting later rows in place.
+    /// Drops a cache whose tab width no longer matches — the next
+    /// `max_line_width` read does a full scan under the current key.
+    fn update_row_widths(&self, start_row: u32, end_row_old: u32, end_row_new: u32) {
+        let mut cache = self.row_widths.borrow_mut();
+        match cache.as_mut() {
+            Some(c) if c.key.tab_width == self.indent.tab_width => {
+                let key = c.key;
+                let old_len = c.widths.len();
+                let lo = (start_row as usize).min(old_len);
+                let hi = ((end_row_old as usize + 1).min(old_len)).max(lo);
+                let replacement = (start_row..=end_row_new).map(|row| self.row_width(row, key));
+                c.widths.splice(lo..hi, replacement);
+            }
+            _ => *cache = None,
+        }
     }
 
     // -- search (M3, sync literal; debounced overlay lands in view) ----------

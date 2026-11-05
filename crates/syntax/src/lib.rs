@@ -80,6 +80,38 @@ pub fn highlight(
     highlight_themed(text, language, buffer_version, None)
 }
 
+/// Forward byte -> char offset converter for span boundaries. Highlight
+/// ranges arrive in ascending order, so one advancing walk serves every
+/// query; a query below the cursor (rare) just restarts the walk.
+struct ByteCharCursor<'a> {
+    text: &'a str,
+    byte: usize,
+    chars: usize,
+}
+
+impl<'a> ByteCharCursor<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, byte: 0, chars: 0 }
+    }
+
+    /// Number of chars whose start byte is strictly below `byte_idx`
+    /// (clamped to the total char count for `byte_idx` past the end).
+    fn convert(&mut self, byte_idx: usize) -> usize {
+        if byte_idx < self.byte {
+            self.byte = 0;
+            self.chars = 0;
+        }
+        while self.byte < byte_idx {
+            let Some(ch) = self.text[self.byte..].chars().next() else {
+                break;
+            };
+            self.byte += ch.len_utf8();
+            self.chars += 1;
+        }
+        self.chars
+    }
+}
+
 /// Same as [`highlight`], but with an explicit theme preset driving span colors.
 pub fn highlight_themed(
     text: &str,
@@ -91,38 +123,18 @@ pub fn highlight_themed(
 
     let lang = language.unwrap_or(&PLAIN_TEXT);
 
-    // Fast ASCII check: if all ASCII, byte offset == char offset (zero extra allocations)
+    // ASCII needs no conversion (byte offset == char offset). Non-ASCII
+    // converts span boundaries with a forward cursor: highlight ranges
+    // arrive in ascending order, so one advancing walk covers them all —
+    // no byte-per-entry offset table (4 transient bytes per source byte,
+    // rebuilt on every keystroke).
     let is_ascii = text.is_ascii();
-    // `u32` (not `usize`): halves this table's transient footprint on
-    // 64-bit (4 vs 8 bytes per byte of source text) — no file this editor
-    // handles exceeds u32::MAX bytes.
-    let char_offset_table: Option<Vec<u32>> = if !is_ascii {
-        let mut table = Vec::with_capacity(text.len() + 1);
-        let mut char_count = 0u32;
-        for (byte_idx, _) in text.char_indices() {
-            while table.len() < byte_idx {
-                table.push(char_count.saturating_sub(1));
-            }
-            table.push(char_count);
-            char_count += 1;
-        }
-        while table.len() <= text.len() {
-            table.push(char_count);
-        }
-        Some(table)
-    } else {
-        None
-    };
-
-    let byte_to_char = |byte_idx: usize| -> usize {
-        if let Some(ref table) = char_offset_table {
-            if byte_idx < table.len() {
-                table[byte_idx] as usize
-            } else {
-                *table.last().unwrap_or(&0) as usize
-            }
-        } else {
+    let mut cursor = ByteCharCursor::new(text);
+    let mut byte_to_char = |byte_idx: usize| -> usize {
+        if is_ascii {
             byte_idx
+        } else {
+            cursor.convert(byte_idx)
         }
     };
 
