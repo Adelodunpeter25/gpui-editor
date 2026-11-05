@@ -23,7 +23,9 @@ This isn't one monolithic package — pull in only what you need:
   machinery) that's wasted on something like a short static code snippet.
 
 This repo isn't published to crates.io — pull in whichever crate(s) you need
-as a `git` dependency, pointing at the subdirectory:
+as a `git` dependency, pointing at the subdirectory. `crates/editor-demo` is
+a small desktop app wiring all three together (file open, toolbar, editing)
+— the reference integration if you want to see the pieces used for real:
 
 ```toml
 # your host app's Cargo.toml — pick only what you need
@@ -132,6 +134,8 @@ use editor_ui::{EditorState, EditorView};
 let state = cx.new(|_| {
     let registry = syntax::LanguageRegistry::builtin();
     EditorState::readonly(source_text, registry.for_extension("rs"))
+    // or EditorState::editable(source_text, registry.for_extension("rs"))
+    // for typing, caret, and undo/redo (see §3 for the init() requirement)
 });
 let view = cx.new(|cx| EditorView::new(&state, cx));
 
@@ -148,9 +152,10 @@ click), or keyboard input silently does nothing.
 ## 5. Comment gutter annotations
 
 The file-view path has an opt-in gutter annotation primitive for review and
-AI-comment flows. It is disabled by default, works in readonly mode, and is
-automatically disabled while word wrap is enabled because the unwrapped
-row-to-screen mapping is required for accurate range selection.
+AI-comment flows. It is disabled by default, works in both readonly and
+editable mode, and is automatically disabled while word wrap is enabled
+because the unwrapped row-to-screen mapping is required for accurate range
+selection.
 
 ```rust
 use editor_ui::{CommentTarget, EditorState};
