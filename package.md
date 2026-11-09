@@ -149,7 +149,36 @@ Enter/Tab auto-indent, and undo/redo. Keys reach the buffer only while the
 view is focused — call `view.focus(window, cx)` once after opening (or on
 click), or keyboard input silently does nothing.
 
-## 5. Comment gutter annotations
+## 5. Select and scroll to a line
+
+`EditorState::select_line` selects the text of a 1-based line number, excluding
+its trailing newline. `EditorView::select_line` additionally scrolls that line
+into the center of the viewport. Both methods clamp line numbers outside the
+buffer to the nearest available line.
+
+Because selection and scrolling belong to the retained view, call the view
+method through its GPUI entity:
+
+```rust
+view.update(cx, |editor_view, cx| {
+    editor_view.select_line(42, cx); // line numbers are 1-based
+});
+```
+
+For scrolling without changing the selection, use a zero-based buffer row and
+choose a `gpui::ScrollStrategy`:
+
+```rust
+view.update(cx, |editor_view, _cx| {
+    editor_view.scroll_to_row(41, gpui::ScrollStrategy::Center);
+});
+```
+
+If a host needs to coordinate another scroll control, the underlying
+`gpui::UniformListScrollHandle` is available with
+`editor_view.scroll_handle()`.
+
+## 6. Comment gutter annotations
 
 The file-view path has an opt-in gutter annotation primitive for review and
 AI-comment flows. It is disabled by default, works in both readonly and
@@ -186,7 +215,7 @@ rows use a fixed translucent yellow review highlight, and the chip uses a fixed
 yellow accent independent of the syntax theme. The editor does not own or
 render the host comment composer—the callback is the integration seam.
 
-## 6. Update the editor from outside (e.g. your own "open file" flow)
+## 7. Update the editor from outside (e.g. your own "open file" flow)
 
 ```rust
 state.update(cx, |editor, cx| {
@@ -205,7 +234,7 @@ large file doesn't stall the window while it parses (see
 `implementation.md` §6). If your code still has `|editor, _cx|`, rename it
 to `|editor, cx|` and pass `cx` through.
 
-## 7. Optional: theme and word wrap
+## 8. Optional: theme and word wrap
 
 ```rust
 state.update(cx, |editor, cx| {
@@ -218,7 +247,7 @@ Syntax colors come from the real `lumis` theme, not a hand-picked palette —
 switching `ThemePreset` changes every scope's actual color, not just a
 handful of named tokens.
 
-## Not yet available (don't build against these expecting them to exist)
+## 9. Not yet available (don't build against these expecting them to exist)
 
 - Edit mode is plain-text only: no search overlay, no bracket-match
   rendering (the model methods exist on `EditorState`, nothing calls them
