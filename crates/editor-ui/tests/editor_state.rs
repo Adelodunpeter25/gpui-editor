@@ -118,6 +118,18 @@ fn select_all_selects_the_whole_buffer() {
 }
 
 #[test]
+fn select_line_selects_clamped_line_text_without_newline() {
+    let mut s = EditorState::readonly("abc\ndef\nghi", Some(&syntax::RUST));
+
+    s.select_line(2);
+    assert_eq!(s.selected_text(), "def");
+    s.select_line(0);
+    assert_eq!(s.selected_text(), "abc");
+    s.select_line(99);
+    assert_eq!(s.selected_text(), "ghi");
+}
+
+#[test]
 fn row_offsets_bound_each_row_and_include_the_newline() {
     let s = EditorState::readonly("abc\nde\nf", Some(&syntax::RUST));
     assert_eq!(s.row_start_offset(0), 0);

@@ -104,6 +104,25 @@ impl EditorView {
         self.focus_handle.clone()
     }
 
+    pub fn scroll_handle(&self) -> &UniformListScrollHandle {
+        &self.scroll_handle
+    }
+
+    pub fn scroll_to_row(&mut self, row: u32, strategy: gpui::ScrollStrategy) {
+        let visual_row = self
+            .wrap_cache
+            .borrow()
+            .first_visual_row(row)
+            .unwrap_or(row as usize);
+        self.scroll_handle.scroll_to_item_strict(visual_row, strategy);
+    }
+
+    pub fn select_line(&mut self, line: u32, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, _| state.select_line(line));
+        self.scroll_to_row(line.saturating_sub(1), gpui::ScrollStrategy::Center);
+        cx.notify();
+    }
+
     pub(crate) fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
         let text = self.state.read(cx).selected_text();
         if !text.is_empty() {

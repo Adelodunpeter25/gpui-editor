@@ -181,6 +181,10 @@ impl WrapCache {
         self.visual_index[visual_ix]
     }
 
+    pub(crate) fn first_visual_row(&self, row: u32) -> Option<usize> {
+        self.visual_index.iter().position(|(buffer_row, _)| *buffer_row == row)
+    }
+
     /// Row-local char range covered by a given sub-line. `row_len` is the
     /// buffer row's total char count (caller already has it from the row's
     /// text), used as the open end for the last sub-line.

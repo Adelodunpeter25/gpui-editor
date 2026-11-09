@@ -394,6 +394,18 @@ impl EditorState {
         self.selection = Selection { range };
     }
 
+    /// Select the text of a 1-based line number, clamping to the buffer.
+    pub fn select_line(&mut self, line: u32) {
+        let line_count = self.line_count();
+        if line_count == 0 {
+            return;
+        }
+        let row = line.saturating_sub(1).min(line_count.saturating_sub(1));
+        self.selection = Selection {
+            range: self.row_start_offset(row)..self.line_end_offset(row),
+        };
+    }
+
     pub fn select_all(&mut self) {
         let len = self.buffer.len_chars();
         self.selection = Selection { range: 0..len };
