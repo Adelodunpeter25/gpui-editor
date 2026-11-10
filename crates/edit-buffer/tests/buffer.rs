@@ -155,3 +155,84 @@ fn backspace_run_coalesces() {
     b.undo();
     assert_eq!(b.text().to_string(), "abcd");
 }
+
+fn grouped(b: &mut Buffer, range: std::ops::Range<usize>, text: &str, group: u64) {
+    b.edit_grouped(
+        &[Edit {
+            range,
+            text: text.into(),
+        }],
+        Some(group),
+    );
+}
+
+/// A run mixing inserts and deletes must replay in order: sorting its steps
+/// by offset (the old behavior) left "abd" behind here.
+#[test]
+fn mixed_typing_run_undoes_and_redoes_in_order() {
+    let mut b = Buffer::from_text("ab");
+    grouped(&mut b, 2..2, "c", 1);
+    grouped(&mut b, 3..3, "d", 1);
+    grouped(&mut b, 3..4, "", 1);
+    grouped(&mut b, 2..3, "", 1);
+    assert_eq!(b.text().to_string(), "ab");
+    b.undo();
+    assert_eq!(b.text().to_string(), "ab");
+    b.redo();
+    assert_eq!(b.text().to_string(), "ab");
+}
+
+/// A run whose keystrokes land at different places (caret moved mid-run).
+#[test]
+fn run_with_non_adjacent_edits_round_trips() {
+    let mut b = Buffer::from_text("hello world");
+    grouped(&mut b, 11..11, "!", 1);
+    grouped(&mut b, 0..0, ">", 1);
+    grouped(&mut b, 6..7, "", 1);
+    let after = b.text().to_string();
+    assert_eq!(after, ">helloworld!");
+    b.undo();
+    assert_eq!(b.text().to_string(), "hello world");
+    b.redo();
+    assert_eq!(b.text().to_string(), after);
+}
+
+/// Several edits in one call: inverse ranges must account for the shift
+/// earlier edits cause.
+#[test]
+fn multi_edit_call_round_trips() {
+    let mut b = Buffer::from_text("one two three");
+    b.edit(&[
+        Edit {
+            range: 8..13,
+            text: "3".into(),
+        },
+        Edit {
+            range: 0..3,
+            text: "first".into(),
+        },
+    ]);
+    assert_eq!(b.text().to_string(), "first two 3");
+    b.undo();
+    assert_eq!(b.text().to_string(), "one two three");
+    b.redo();
+    assert_eq!(b.text().to_string(), "first two 3");
+}
+
+#[test]
+fn clear_history_drops_undo_and_redo() {
+    let mut b = Buffer::from_text("a");
+    b.edit(&[Edit {
+        range: 1..1,
+        text: "b".into(),
+    }]);
+    b.edit(&[Edit {
+        range: 2..2,
+        text: "c".into(),
+    }]);
+    b.undo();
+    assert!(b.can_undo() && b.can_redo());
+    b.clear_history();
+    assert!(!b.can_undo() && !b.can_redo());
+    assert_eq!(b.text().to_string(), "ab");
+}

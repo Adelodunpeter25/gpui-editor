@@ -26,14 +26,24 @@ pub struct BufferSnapshot {
     pub len_chars: usize,
 }
 
-/// Bounded undo entry: inverse of one `edit()` call, or the merged run of
-/// several same-group calls (see `edit_grouped`).
+/// One `edit()` call's worth of history: the edits as applied, and the
+/// edits that revert them.
+#[derive(Debug, Clone)]
+struct UndoStep {
+    /// Edits as applied, in pre-edit coordinates.
+    forward: Vec<Edit>,
+    /// Edits restoring the prior text, in post-edit coordinates.
+    inverse: Vec<Edit>,
+}
+
+/// Bounded undo entry: one `edit()` call, or the run of several same-group
+/// calls (see `edit_grouped`). Steps are kept in the order they were
+/// applied; each one's offsets are only valid against the text as it stood
+/// at that point, so undo replays inverses newest-first and redo replays
+/// forwards oldest-first.
 #[derive(Debug, Clone)]
 struct UndoEntry {
-    /// Edits as applied (forward).
-    forward: Vec<Edit>,
-    /// Inverse edits to restore prior text.
-    inverse: Vec<Edit>,
+    steps: Vec<UndoStep>,
     /// Calls sharing this id merge into this entry (typing-run grouping).
     group: Option<u64>,
 }
@@ -149,60 +159,78 @@ impl Buffer {
         if edits.is_empty() {
             return self.version;
         }
-        let (forward, inverse) = self.apply(edits);
+        let step = self.apply(edits);
         self.version += 1;
         if self.max_history > 0 {
+            self.redo.clear();
             if let (Some(g), Some(last)) = (group, self.undo.last_mut()) {
                 if last.group == Some(g) {
-                    last.forward.extend(forward);
-                    last.inverse.extend(inverse);
-                    self.redo.clear();
+                    last.steps.push(step);
                     return self.version;
                 }
             }
             self.undo.push(UndoEntry {
-                forward,
-                inverse,
+                steps: vec![step],
                 group,
             });
             if self.undo.len() > self.max_history {
                 self.undo.remove(0);
             }
-            self.redo.clear();
         }
         self.version
     }
 
-    /// Apply `edits` to the rope. Returns `(forward, inverse)` — the edits as
-    /// given, and their inverses in apply order — for history bookkeeping.
-    fn apply(&mut self, edits: &[Edit]) -> (Vec<Edit>, Vec<Edit>) {
-        // Build inverse by reading current text at each range (apply back-to-front
-        // so earlier offsets stay valid while collecting).
-        let mut sorted: Vec<&Edit> = edits.iter().collect();
-        sorted.sort_by_key(|e| e.range.start);
+    /// Apply `edits` (ranges in current-text coordinates, non-overlapping)
+    /// to the rope and return the step that records them.
+    fn apply(&mut self, edits: &[Edit]) -> UndoStep {
+        let len = self.len_chars();
+        let mut forward: Vec<Edit> = edits
+            .iter()
+            .map(|e| {
+                let start = e.range.start.min(len);
+                let end = e.range.end.min(len).max(start);
+                Edit {
+                    range: start..end,
+                    text: e.text.clone(),
+                }
+            })
+            .collect();
+        forward.sort_by_key(|e| e.range.start);
 
-        let mut inverse: Vec<Edit> = Vec::with_capacity(sorted.len());
-        for e in sorted.iter().rev() {
-            let start = e.range.start.min(self.len_chars());
-            let end = e.range.end.min(self.len_chars());
-            let old: String = self.rope.slice(start..end).to_string();
+        // Each inverse range sits where the inserted text lands once every
+        // earlier edit in this call has shifted it.
+        let mut inverse: Vec<Edit> = Vec::with_capacity(forward.len());
+        let mut shift: isize = 0;
+        for e in &forward {
+            let inserted = e.text.chars().count();
+            let start = (e.range.start as isize + shift) as usize;
             inverse.push(Edit {
-                range: start..start + e.text.chars().count(),
-                text: old,
+                range: start..start + inserted,
+                text: self.rope.slice(e.range.clone()).to_string(),
             });
+            shift += inserted as isize - (e.range.end - e.range.start) as isize;
         }
-        // Apply forward back-to-front so ranges don't shift.
-        for e in sorted.iter().rev() {
+        self.replace_all(&forward);
+        UndoStep { forward, inverse }
+    }
+
+    /// Replace each range with its text. `edits` must be sorted by start and
+    /// non-overlapping; applied back-to-front so earlier offsets stay valid.
+    fn replace_all(&mut self, edits: &[Edit]) {
+        for e in edits.iter().rev() {
             let start = e.range.start.min(self.rope.len_chars());
-            let end = e.range.end.min(self.rope.len_chars());
+            let end = e.range.end.min(self.rope.len_chars()).max(start);
             self.rope.remove(start..end);
             if !e.text.is_empty() {
                 self.rope.insert(start, &e.text);
             }
         }
-        // Inverse currently reversed (back-to-front order); store in apply order.
-        inverse.reverse();
-        (edits.to_vec(), inverse)
+    }
+
+    /// Drop all undo/redo history (e.g. after loading a different file).
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -216,16 +244,8 @@ impl Buffer {
     /// Undo last edit group. Returns new version or None.
     pub fn undo(&mut self) -> Option<u64> {
         let entry = self.undo.pop()?;
-        // Apply inverse back-to-front.
-        let mut sorted = entry.inverse.clone();
-        sorted.sort_by_key(|e| e.range.start);
-        for e in sorted.iter().rev() {
-            let start = e.range.start.min(self.rope.len_chars());
-            let end = e.range.end.min(self.rope.len_chars());
-            self.rope.remove(start..end);
-            if !e.text.is_empty() {
-                self.rope.insert(start, &e.text);
-            }
+        for step in entry.steps.iter().rev() {
+            self.replace_all(&step.inverse);
         }
         self.version += 1;
         self.redo.push(entry);
@@ -235,15 +255,8 @@ impl Buffer {
     /// Redo last undone group. Returns new version or None.
     pub fn redo(&mut self) -> Option<u64> {
         let entry = self.redo.pop()?;
-        let mut sorted = entry.forward.clone();
-        sorted.sort_by_key(|e| e.range.start);
-        for e in sorted.iter().rev() {
-            let start = e.range.start.min(self.rope.len_chars());
-            let end = e.range.end.min(self.rope.len_chars());
-            self.rope.remove(start..end);
-            if !e.text.is_empty() {
-                self.rope.insert(start, &e.text);
-            }
+        for step in &entry.steps {
+            self.replace_all(&step.forward);
         }
         self.version += 1;
         self.undo.push(entry);

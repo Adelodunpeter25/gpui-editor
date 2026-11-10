@@ -420,3 +420,36 @@ fn readonly_edit_does_not_notify(cx: &mut TestAppContext) {
     let state = cx.update(|cx| cx.new(|_| EditorState::readonly("hello", None)));
     assert_eq!(notifications(cx, &state, |s, cx| s.type_text(5..5, "!", cx)), 0);
 }
+
+// -- undo grouping ------------------------------------------------------------
+
+/// Type, then backspace, inside one run: undo restores the original text.
+#[gpui::test]
+fn undo_restores_text_after_a_type_then_backspace_run(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("ab", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(2..2, "c", cx);
+        s.type_text(3..3, "d", cx);
+        s.type_text(3..4, "", cx);
+        s.type_text(2..3, "", cx);
+    });
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.text(), "ab"));
+}
+
+/// Moving the caret (click / arrow) between keystrokes splits the typing
+/// run, so each side undoes on its own.
+#[gpui::test]
+fn moving_the_caret_splits_the_typing_run(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(5..5, "!", cx);
+        s.set_selection(0..0);
+        s.type_text(0..0, ">", cx);
+    });
+    state.read_with(cx, |s, _| assert_eq!(s.text(), ">hello!"));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.text(), "hello!"));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.text(), "hello"));
+}

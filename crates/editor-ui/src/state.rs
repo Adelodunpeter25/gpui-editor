@@ -397,8 +397,17 @@ impl EditorState {
         cx.notify();
     }
 
+    /// Set the selection (clicks, drags, caret motion). Moving the caret
+    /// ends the current typing run, so the next keystroke starts its own
+    /// undo entry.
     pub fn set_selection(&mut self, range: Range<usize>) {
+        self.end_typing_run();
         self.selection = Selection { range };
+    }
+
+    fn end_typing_run(&mut self) {
+        self.typing_group = None;
+        self.last_typing = None;
     }
 
     /// Select the text of a 1-based line number, clamping to the buffer.
@@ -408,6 +417,7 @@ impl EditorState {
             return;
         }
         let row = line.saturating_sub(1).min(line_count.saturating_sub(1));
+        self.end_typing_run();
         self.selection = Selection {
             range: self.row_start_offset(row)..self.line_end_offset(row),
         };
@@ -415,6 +425,7 @@ impl EditorState {
 
     pub fn select_all(&mut self) {
         let len = self.buffer.len_chars();
+        self.end_typing_run();
         self.selection = Selection { range: 0..len };
     }
 
