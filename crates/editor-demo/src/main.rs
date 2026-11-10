@@ -16,11 +16,13 @@ actions!(
         ToggleWrap,
         ToggleDiff,
         ToggleFont,
-        ToggleCommentGutter
+        ToggleCommentGutter,
+        SaveAs
     ]
 );
 
-const INITIAL_SAMPLE: &str = r#"// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
+const INITIAL_SAMPLE: &str = r#"// Click in and type. Cmd+Z undoes, Cmd+S saves (asks where the first time).
+// Press Cmd+O (or Ctrl+O) to open any file in Finder / file dialog!
 // Syntax highlighting is powered by Tree-sitter & Lumis across all languages.
 
 fn main() {
@@ -49,14 +51,19 @@ impl Render for DemoApp {
             .map(|l| l.name)
             .unwrap_or("plain text");
 
-        // Save status: the demo buffer has no file behind it, so Cmd+S only
-        // does something once a file is open.
+        // Save status. The demo buffer starts with no file behind it; the
+        // first Cmd+S asks where to put it.
         let dirty = self.state.read(cx).is_dirty();
         let (status_text, status_color) = match (&self.save_error, self.file_path.is_some(), dirty) {
             (Some(error), _, _) => (format!("Save failed: {error}"), rgb(0xf38ba8)),
-            (None, true, true) => ("● Modified — Cmd+S to save".to_string(), rgb(0xf9e2af)),
+            (None, _, true) => ("● Modified — Cmd+S to save".to_string(), rgb(0xf9e2af)),
             (None, true, false) => ("Saved".to_string(), rgb(0xa6e3a1)),
-            (None, false, _) => ("✏️ Editable — open a file to save".to_string(), rgb(0xa6e3a1)),
+            (None, false, false) => ("✏️ Editable — click in and type".to_string(), rgb(0xa6e3a1)),
+        };
+        let line_ending = match self.state.read(cx).line_ending() {
+            editor_ui::LineEnding::Lf => "LF",
+            editor_ui::LineEnding::CrLf => "CRLF",
+            editor_ui::LineEnding::Cr => "CR",
         };
 
         let wrap_enabled = self.state.read(cx).wrap_enabled();
@@ -95,6 +102,14 @@ impl Render for DemoApp {
             }))
             .on_action(cx.listener(|this, _: &ToggleCommentGutter, _window, cx| {
                 this.toggle_comment_gutter(cx);
+            }))
+            // The editor consumes `Save` itself when it has a path; it
+            // reaches here otherwise (see `DemoApp::save`).
+            .on_action(cx.listener(|this, _: &editor_ui::Save, _window, cx| {
+                this.save(cx);
+            }))
+            .on_action(cx.listener(|this, _: &SaveAs, _window, cx| {
+                this.save_as(cx);
             }))
             // Top toolbar / status bar with Open button
             .child(
@@ -259,6 +274,16 @@ impl Render for DemoApp {
                                     .bg(rgb(0x313244))
                                     .text_color(rgb(0x89b4fa))
                                     .child(format!("Language: {lang_name}")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded_md()
+                                    .bg(rgb(0x313244))
+                                    .text_color(rgb(0xa6adc8))
+                                    .child(line_ending),
                             ),
                     ),
             )
@@ -320,7 +345,11 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Open File…", OpenFile)],
+                items: vec![
+                    MenuItem::action("Open File…", OpenFile),
+                    MenuItem::action("Save", editor_ui::Save),
+                    MenuItem::action("Save As…", SaveAs),
+                ],
                 disabled: false,
             },
             Menu {
@@ -339,6 +368,12 @@ fn main() {
             KeyBinding::new("cmd-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("ctrl-o", OpenFile, Some("DemoApp")),
             KeyBinding::new("cmd-q", Quit, None),
+            // Also bound in the editor's own context by `editor_ui::init`;
+            // these cover the window when the editor isn't focused.
+            KeyBinding::new("cmd-s", editor_ui::Save, Some("DemoApp")),
+            KeyBinding::new("ctrl-s", editor_ui::Save, Some("DemoApp")),
+            KeyBinding::new("cmd-shift-s", SaveAs, Some("DemoApp")),
+            KeyBinding::new("ctrl-shift-s", SaveAs, Some("DemoApp")),
             KeyBinding::new("cmd-alt-z", ToggleWrap, Some("DemoApp")),
             KeyBinding::new("ctrl-alt-z", ToggleWrap, Some("DemoApp")),
             KeyBinding::new("cmd-alt-d", ToggleDiff, Some("DemoApp")),

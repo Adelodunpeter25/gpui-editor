@@ -127,8 +127,28 @@ impl DemoApp {
         cx.notify();
     }
 
+    /// True when it's fine to replace the buffer: it has no unsaved edits,
+    /// or the user agreed to throw them away.
+    fn confirm_discard(&self, cx: &App) -> bool {
+        if !self.state.read(cx).is_dirty() {
+            return true;
+        }
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Unsaved changes")
+            .set_description("Opening another file discards the changes you haven't saved.")
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show();
+        matches!(answer, rfd::MessageDialogResult::Ok)
+    }
+
     pub(crate) fn open_file(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.confirm_discard(cx) {
+            return;
+        }
         if let Some(path) = rfd::FileDialog::new().pick_file() {
+            // `set_text` is a document load: it clears undo history and
+            // marks the buffer clean.
             if let Ok(content) = fs::read_to_string(&path) {
                 let registry = LanguageRegistry::builtin();
                 let lang = LanguageRegistry::for_path(&path).or_else(|| {
@@ -149,5 +169,38 @@ impl DemoApp {
                 cx.notify();
             }
         }
+    }
+
+    /// Save. The editor handles cmd/ctrl-s itself once it has a path; this
+    /// runs when it doesn't (the action propagates up to here) or when the
+    /// editor isn't the focused element (File menu, toolbar focus).
+    pub(crate) fn save(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).path().is_some() {
+            self.state.update(cx, |editor, cx| editor.save(cx));
+        } else {
+            self.save_as(cx);
+        }
+    }
+
+    /// Pick a destination, bind the editor to it, and save there.
+    pub(crate) fn save_as(&mut self, cx: &mut Context<Self>) {
+        let mut dialog = rfd::FileDialog::new();
+        dialog = match self.file_path.as_ref().and_then(|p| p.file_name()) {
+            Some(name) => dialog.set_file_name(name.to_string_lossy()),
+            None => dialog.set_file_name("untitled.rs"),
+        };
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        let lang = LanguageRegistry::for_path(&path);
+        self.state.update(cx, |editor, cx| {
+            editor.set_path(Some(path.clone()));
+            if lang.is_some() {
+                editor.set_language(lang, cx);
+            }
+            editor.save(cx);
+        });
+        self.file_path = Some(path);
+        cx.notify();
     }
 }
