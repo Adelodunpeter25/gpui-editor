@@ -66,6 +66,10 @@ pub struct EditorView {
     /// crossing a shorter line doesn't drift horizontally. In char columns;
     /// cleared by horizontal motion, clicks, and edits.
     pub(crate) goal_col: Rc<Cell<Option<u32>>>,
+    /// Set by keyboard edits and caret motion; the next render scrolls the
+    /// caret back into the viewport and clears it. Deferred to render
+    /// because that's where the wrap cache and measurements are current.
+    pub(crate) reveal_caret: Rc<Cell<bool>>,
 }
 
 impl EditorView {
@@ -88,6 +92,89 @@ impl EditorView {
             wrap_cache: Rc::new(RefCell::new(WrapCache::default())),
             key_anchor: Rc::new(Cell::new(None)),
             goal_col: Rc::new(Cell::new(None)),
+            reveal_caret: Rc::new(Cell::new(false)),
+        }
+    }
+
+    /// Scroll the caret into the viewport on the next frame (no-op if it's
+    /// already visible). Keyboard edits and motion do this themselves; hosts
+    /// call it after moving the selection programmatically.
+    pub fn scroll_to_caret(&mut self, cx: &mut Context<Self>) {
+        self.reveal_caret.set(true);
+        cx.notify();
+    }
+
+    /// The end of the selection the keyboard is moving: the end opposite
+    /// the shift-extension anchor, or the selection's end without one.
+    pub(crate) fn selection_head(&self, cx: &App) -> usize {
+        let range = self.state.read(cx).selection().range.clone();
+        match self.key_anchor.get() {
+            Some(anchor) if anchor == range.end => range.start,
+            _ => range.end,
+        }
+    }
+
+    /// Where `offset` paints: its visual row, and its x relative to where
+    /// row text starts (continuation-line indent included).
+    pub(crate) fn offset_position(
+        &self,
+        offset: usize,
+        char_width: Pixels,
+        cx: &App,
+    ) -> (usize, Pixels) {
+        let state = self.state.read(cx);
+        let point = state.offset_to_point(offset);
+        let col = point.col as usize;
+        let (visual_row, sub_start, indent_chars) =
+            self.wrap_cache.borrow().locate(point.row, col);
+        let prefix: String = state
+            .line_text(point.row)
+            .chars()
+            .skip(sub_start)
+            .take(col.saturating_sub(sub_start))
+            .collect();
+        let x = char_width * (indent_chars as f32)
+            + crate::text_display_width(&prefix, char_width, state.tab_width());
+        (visual_row, x)
+    }
+
+    /// Bring the caret back into view: vertically via the list's own
+    /// nearest-edge scroll, horizontally by nudging the shared scroll
+    /// offset. `content_width` is `Some` only while h-scroll is active.
+    pub(crate) fn scroll_caret_into_view(
+        &self,
+        char_width: Pixels,
+        content_x: Pixels,
+        content_width: Option<Pixels>,
+        viewport_width: Pixels,
+        cx: &App,
+    ) {
+        let (visual_row, x) = self.offset_position(self.selection_head(cx), char_width, cx);
+        self.scroll_handle
+            .scroll_to_item(visual_row, gpui::ScrollStrategy::Nearest);
+
+        let Some(content_width) = content_width else {
+            return;
+        };
+        if viewport_width <= px(0.) {
+            return;
+        }
+        let base = self.scroll_handle.0.borrow().base_handle.clone();
+        let offset = base.offset();
+        let scroll_x = -offset.x;
+        // Keep a few columns of context on whichever side the caret nears.
+        let margin = char_width * 4.0;
+        let caret_x = content_x + x;
+        let mut target = scroll_x;
+        if x - margin < scroll_x {
+            target = x - margin;
+        } else if caret_x + margin > scroll_x + viewport_width {
+            target = caret_x + margin - viewport_width;
+        }
+        let max_x = (content_width - viewport_width).max(px(0.));
+        let target = target.clamp(px(0.), max_x);
+        if target != scroll_x {
+            base.set_offset(gpui::point(-target, offset.y));
         }
     }
 
@@ -181,12 +268,14 @@ impl EditorView {
     pub(crate) fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.undo(cx));
         self.clear_motion_caches();
+        self.reveal_caret.set(true);
         cx.notify();
     }
 
     pub(crate) fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| state.redo(cx));
         self.clear_motion_caches();
+        self.reveal_caret.set(true);
         cx.notify();
     }
 
@@ -205,6 +294,7 @@ impl EditorView {
         });
         if edited {
             self.clear_motion_caches();
+            self.reveal_caret.set(true);
             cx.notify();
         }
     }
@@ -223,6 +313,7 @@ impl EditorView {
             state.replace_range(range, &text, cx);
         });
         self.clear_motion_caches();
+        self.reveal_caret.set(true);
         cx.notify();
     }
 

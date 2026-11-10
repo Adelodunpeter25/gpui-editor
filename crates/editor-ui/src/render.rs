@@ -13,7 +13,6 @@ use edit_buffer::Point;
 use crate::view::RowInteraction;
 use crate::wrap::{clip_to_subrange, WrapCache};
 
-use crate::input::handle_edit_key;
 use crate::measure::{
     measure_char_width, round_wrap_width, CONTENT_X_REM, MAX_ROW_RENDER_CHARS,
     WRAP_GUTTER_RESERVE,
@@ -111,6 +110,10 @@ impl Render for EditorView {
         const H_TRAILING_PAD: Pixels = px(64.0);
         let content_width = can_h_scroll.then(|| content_x + max_text_px + H_TRAILING_PAD);
 
+        if self.reveal_caret.take() {
+            self.scroll_caret_into_view(char_width, content_x, content_width, measured_width, cx);
+        }
+
         // Gutter geometry mirrors the old in-flow layout (`px_3` row pad +
         // `w_10` gutter = CONTENT_X_REM) so text starts at the same x.
         let rem = window.rem_size();
@@ -155,27 +158,7 @@ impl Render for EditorView {
             .on_action(cx.listener(EditorView::redo))
             .on_action(cx.listener(EditorView::cut))
             .on_action(cx.listener(EditorView::paste))
-            .on_key_down({
-                let drag = self.comment_drag.clone();
-                let focus_handle = self.focus_handle.clone();
-                let state = self.state.clone();
-                let key_anchor = self.key_anchor.clone();
-                let goal_col = self.goal_col.clone();
-                move |event, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        drag.set(None);
-                    }
-                    handle_edit_key(
-                        event,
-                        &focus_handle,
-                        &state,
-                        &key_anchor,
-                        &goal_col,
-                        window,
-                        cx,
-                    );
-                }
-            })
+            .on_key_down(cx.listener(EditorView::key_down))
             .on_mouse_up(MouseButton::Left, {
                 let selecting = self.selecting.clone();
                 let comment_drag = self.comment_drag.clone();

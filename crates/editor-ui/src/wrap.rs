@@ -181,8 +181,35 @@ impl WrapCache {
         self.visual_index[visual_ix]
     }
 
+    /// `visual_index` is sorted by buffer row, so this is a binary search.
     pub(crate) fn first_visual_row(&self, row: u32) -> Option<usize> {
-        self.visual_index.iter().position(|(buffer_row, _)| *buffer_row == row)
+        let ix = self
+            .visual_index
+            .partition_point(|(buffer_row, _)| *buffer_row < row);
+        (self.visual_index.get(ix)?.0 == row).then_some(ix)
+    }
+
+    /// Where row-local char column `col` of `row` paints: its visual row,
+    /// the column its sub-line starts at, and that sub-line's indent padding
+    /// in chars (`0` on a row's first sub-line). A column sitting on a wrap
+    /// boundary belongs to the sub-line it starts, matching where the row
+    /// renderer draws the caret. Falls back to one visual row per buffer
+    /// row when the cache hasn't caught up with the buffer yet.
+    pub(crate) fn locate(&self, row: u32, col: usize) -> (usize, usize, u32) {
+        let Some(first) = self.first_visual_row(row) else {
+            return (row as usize, 0, 0);
+        };
+        let breaks = self
+            .row_breaks
+            .get(row as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let sub = breaks.iter().take_while(|b| **b <= col).count();
+        if sub == 0 {
+            (first, 0, 0)
+        } else {
+            (first + sub, breaks[sub - 1], self.indent_chars(row))
+        }
     }
 
     /// Row-local char range covered by a given sub-line. `row_len` is the
