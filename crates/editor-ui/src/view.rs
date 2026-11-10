@@ -14,7 +14,7 @@ use std::rc::Rc;
 use crate::state::EditorState;
 use crate::types::{CommentTarget, FontConfig};
 use crate::wrap::WrapCache;
-use crate::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+use crate::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 
 pub struct EditorView {
     pub(crate) state: Entity<EditorState>,
@@ -384,6 +384,15 @@ impl EditorView {
         self.clear_motion_caches();
         self.reveal_caret.set(true);
         cx.notify();
+    }
+
+    /// Save (cmd/ctrl-s). When the editor has nothing to save with — it's
+    /// readonly, or has neither a path nor a save handler — the action
+    /// propagates so a host-level binding can take it.
+    pub(crate) fn save(&mut self, _: &Save, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.state.update(cx, |state, cx| state.save(cx)) {
+            cx.propagate();
+        }
     }
 
     pub(crate) fn clear_motion_caches(&mut self) {

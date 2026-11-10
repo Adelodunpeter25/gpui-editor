@@ -11,7 +11,7 @@ use crate::view::EditorView;
 
 actions!(
     editor_ui,
-    [Copy, SelectAll, CancelComment, Undo, Redo, Cut, Paste]
+    [Copy, SelectAll, CancelComment, Undo, Redo, Cut, Paste, Save]
 );
 
 /// Bind default keys for `editor_ui`'s actions. Call once at app startup.
@@ -29,6 +29,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-x", Cut, Some("Editor")),
         KeyBinding::new("cmd-v", Paste, Some("Editor")),
         KeyBinding::new("ctrl-v", Paste, Some("Editor")),
+        KeyBinding::new("cmd-s", Save, Some("Editor")),
+        KeyBinding::new("ctrl-s", Save, Some("Editor")),
     ]);
 }
 

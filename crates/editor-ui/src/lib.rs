@@ -8,7 +8,7 @@
 //! — the `Render` impl (`render.rs`), per-row painting (`row.rs`),
 //! scrollbars (`scrollbar.rs`), measurement/hit-testing (`measure.rs`), and
 //! edit-mode key routing (`input.rs`) and platform text input / IME
-//! (`ime.rs`). This root file is module
+//! (`ime.rs`), and saving (`save.rs`). This root file is module
 //! declarations + re-exports only.
 
 mod diff_view;
@@ -17,6 +17,7 @@ mod input;
 mod measure;
 mod render;
 mod row;
+mod save;
 mod scrollbar;
 mod state;
 mod types;
@@ -25,7 +26,8 @@ mod wrap;
 
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use diff_view::{DiffState, DiffView};
-pub use input::{init, CancelComment, Copy, Cut, Paste, Redo, SelectAll, Undo};
+pub use input::{init, CancelComment, Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+pub use save::{EditorEvent, SaveHandler, SaveRequest, SaveStatus};
 pub use scrollbar::scrollbar_thumb_size;
 pub use state::EditorState;
 pub use types::{

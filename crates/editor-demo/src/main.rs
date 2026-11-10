@@ -49,6 +49,16 @@ impl Render for DemoApp {
             .map(|l| l.name)
             .unwrap_or("plain text");
 
+        // Save status: the demo buffer has no file behind it, so Cmd+S only
+        // does something once a file is open.
+        let dirty = self.state.read(cx).is_dirty();
+        let (status_text, status_color) = match (&self.save_error, self.file_path.is_some(), dirty) {
+            (Some(error), _, _) => (format!("Save failed: {error}"), rgb(0xf38ba8)),
+            (None, true, true) => ("● Modified — Cmd+S to save".to_string(), rgb(0xf9e2af)),
+            (None, true, false) => ("Saved".to_string(), rgb(0xa6e3a1)),
+            (None, false, _) => ("✏️ Editable — open a file to save".to_string(), rgb(0xa6e3a1)),
+        };
+
         let wrap_enabled = self.state.read(cx).wrap_enabled();
         let showing_diff = self.showing_diff;
         let using_custom_font = self.using_custom_font;
@@ -237,8 +247,8 @@ impl Render for DemoApp {
                                     .py_0p5()
                                     .rounded_md()
                                     .bg(rgb(0x313244))
-                                    .text_color(rgb(0xa6e3a1))
-                                    .child("✏️ Editable — click in and type (Cmd+Z undoes)"),
+                                    .text_color(status_color)
+                                    .child(status_text),
                             )
                             .child(
                                 div()

@@ -162,6 +162,7 @@ impl Render for EditorView {
             .on_action(cx.listener(EditorView::redo))
             .on_action(cx.listener(EditorView::cut))
             .on_action(cx.listener(EditorView::paste))
+            .on_action(cx.listener(EditorView::save))
             .on_key_down(cx.listener(EditorView::key_down))
             .on_mouse_up(MouseButton::Left, {
                 let selecting = self.selecting.clone();

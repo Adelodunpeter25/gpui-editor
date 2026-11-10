@@ -3,7 +3,7 @@
 //! drive them.
 
 use editor_ui::CommentTarget;
-use editor_ui::{DiffState, DiffView, EditorState, EditorView, FontConfig};
+use editor_ui::{DiffState, DiffView, EditorEvent, EditorState, EditorView, FontConfig};
 use gpui::*;
 use std::cell::RefCell;
 use std::fs;
@@ -17,8 +17,7 @@ pub(crate) struct DemoApp {
     pub(crate) state: Entity<EditorState>,
     pub(crate) view: Entity<EditorView>,
     /// Diffs `INITIAL_SAMPLE` (old) against whatever's currently open (new)
-    /// — refreshed just before `showing_diff` flips on, not live-tracked,
-    /// since there's no edit mode yet to make "live" meaningful.
+    /// — refreshed just before `showing_diff` flips on, not live-tracked.
     pub(crate) diff_state: Entity<DiffState>,
     pub(crate) diff_view: Entity<DiffView>,
     pub(crate) showing_diff: bool,
@@ -30,7 +29,10 @@ pub(crate) struct DemoApp {
     pub(crate) file_path: Option<PathBuf>,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) comment_target: Rc<RefCell<Option<CommentTarget>>>,
+    /// Last save failure, shown in the toolbar until the next save or open.
+    pub(crate) save_error: Option<String>,
     pub(crate) _state_subscription: Subscription,
+    pub(crate) _save_subscription: Subscription,
 }
 
 impl DemoApp {
@@ -49,6 +51,13 @@ impl DemoApp {
         let state_subscription = cx.observe(&state, |_this, _state, cx| {
             cx.notify();
         });
+        let save_subscription = cx.subscribe(&state, |this, _state, event: &EditorEvent, cx| {
+            this.save_error = match event {
+                EditorEvent::Saved => None,
+                EditorEvent::SaveFailed(error) => Some(error.clone()),
+            };
+            cx.notify();
+        });
         let diff_state =
             cx.new(|_| DiffState::new(INITIAL_SAMPLE, INITIAL_SAMPLE, registry.for_name("rust")));
         let diff_view = cx.new(|_| DiffView::new(&diff_state));
@@ -65,7 +74,9 @@ impl DemoApp {
             file_path: None,
             focus_handle,
             comment_target,
+            save_error: None,
             _state_subscription: state_subscription,
+            _save_subscription: save_subscription,
         }
     }
 
@@ -129,8 +140,11 @@ impl DemoApp {
                 self.state.update(cx, |editor, cx| {
                     editor.set_text(&content, cx);
                     editor.set_language(lang, cx);
+                    // Bind the editor to the file so Cmd+S writes back to it.
+                    editor.set_path(Some(path.clone()));
                 });
 
+                self.save_error = None;
                 self.file_path = Some(path);
                 cx.notify();
             }

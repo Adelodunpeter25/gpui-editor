@@ -8,13 +8,16 @@
 //! `view.rs`, and the `Render` impl plus its paint helpers in `lib.rs`.
 
 use edit_buffer::{Buffer, Edit, Point};
-use gpui::{px, AppContext, Context, Pixels};
+use gpui::{px, AppContext, Context, EventEmitter, Pixels};
 use std::cell::RefCell;
+use std::io;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use syntax::{HighlightSpan, Language, ThemePreset};
 
 use crate::chars_display_width;
+use crate::save::{write_atomic, EditorEvent, SaveHandler, SaveRequest, SaveStatus};
 use crate::types::{CommentTarget, FontConfig, IndentOptions, Mode, SearchState, Selection, StyledSpan};
 
 /// Below this size, rehighlight runs synchronously inline rather than via
@@ -54,6 +57,13 @@ pub struct EditorState {
     next_group: u64,
     /// When the last typing edit landed — decides run continuation.
     last_typing: Option<Instant>,
+    /// File this buffer is bound to — where `save` writes by default.
+    path: Option<PathBuf>,
+    /// Host override for `save` (remote files, save-as, format-on-save).
+    save_handler: Option<SaveHandler>,
+    /// Buffer revision at the last save/load; differing from the buffer's
+    /// current revision is what "dirty" means.
+    saved_revision: u64,
     /// In-progress IME composition (dead keys, CJK input): the char range
     /// of provisional text the input method may still replace. `None` when
     /// not composing.
@@ -73,6 +83,8 @@ pub struct EditorState {
     /// `&self` while filling the cache.
     row_widths: RefCell<Option<RowWidthCache>>,
 }
+
+impl EventEmitter<EditorEvent> for EditorState {}
 
 /// How an edit is recorded in undo history.
 #[derive(Clone, Copy, PartialEq)]
@@ -111,6 +123,14 @@ impl EditorState {
         Self::from_buffer(buffer, language, Mode::Editable)
     }
 
+    /// Open `path` for editing: reads it (UTF-8) and binds the editor to
+    /// it, so `save` writes back to the same file.
+    pub fn open(path: impl Into<PathBuf>, language: Option<&'static Language>) -> io::Result<Self> {
+        let path = path.into();
+        let text = std::fs::read_to_string(&path)?;
+        Ok(Self::editable(&text, language).with_path(path))
+    }
+
     fn from_buffer(buffer: Buffer, language: Option<&'static Language>, mode: Mode) -> Self {
         let theme = ThemePreset::GitHubDark;
         let text = buffer.text().to_string();
@@ -130,6 +150,9 @@ impl EditorState {
             typing_group: None,
             next_group: 0,
             last_typing: None,
+            path: None,
+            save_handler: None,
+            saved_revision: 0,
             marked: None,
             composition_group: None,
             row_spans: Vec::new(),
@@ -217,6 +240,81 @@ impl EditorState {
         self
     }
 
+    /// Bind the editor to a file path (see `save`).
+    pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Change or clear the file this editor saves to. Doesn't touch the
+    /// text or the dirty state.
+    pub fn set_path(&mut self, path: Option<PathBuf>) {
+        self.path = path;
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Take over saving. With a handler set, `save` hands it a
+    /// `SaveRequest` instead of writing to `path` itself — for remote
+    /// files, a save-as dialog, format-on-save, and the like. `None`
+    /// restores the default.
+    pub fn set_save_handler(&mut self, handler: Option<SaveHandler>) {
+        self.save_handler = handler;
+    }
+
+    /// True when the text differs from what was last saved or loaded.
+    /// Undoing back to the saved text reads as clean again.
+    pub fn is_dirty(&self) -> bool {
+        self.buffer.revision() != self.saved_revision
+    }
+
+    /// Content revision of the current text (see `SaveRequest::revision`).
+    pub fn revision(&self) -> u64 {
+        self.buffer.revision()
+    }
+
+    /// Record that `revision` is what's persisted. For save handlers that
+    /// returned `SaveStatus::Deferred`: call this once the write lands.
+    pub fn mark_saved(&mut self, revision: u64, cx: &mut Context<Self>) {
+        self.saved_revision = revision;
+        cx.emit(EditorEvent::Saved);
+        cx.notify();
+    }
+
+    /// Save the buffer: through the save handler if one is set, otherwise
+    /// straight to `path` (atomically — see `save.rs`). Emits
+    /// `EditorEvent::Saved` / `SaveFailed`. Returns `false` without doing
+    /// anything when there's nothing to save with: the editor is readonly,
+    /// or has neither a handler nor a path.
+    pub fn save(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.is_readonly() {
+            return false;
+        }
+        let revision = self.buffer.revision();
+        let result = if let Some(handler) = &self.save_handler {
+            handler(SaveRequest {
+                text: self.buffer.text().to_string(),
+                path: self.path.clone(),
+                revision,
+            })
+        } else if let Some(path) = &self.path {
+            write_atomic(path, self.buffer.text()).map(|()| SaveStatus::Saved)
+        } else {
+            return false;
+        };
+        match result {
+            Ok(SaveStatus::Saved) => self.mark_saved(revision, cx),
+            Ok(SaveStatus::Deferred) => {}
+            Err(error) => {
+                cx.emit(EditorEvent::SaveFailed(error.to_string()));
+                cx.notify();
+            }
+        }
+        true
+    }
+
     pub fn with_indent(mut self, indent: IndentOptions) -> Self {
         self.indent = indent;
         self
@@ -289,9 +387,10 @@ impl EditorState {
         self.rehighlight(cx);
     }
 
-    /// Replace whole text (e.g. file open). Resets selection/search and
-    /// drops undo history: this is a different document, not an edit to the
-    /// previous one, so undo must not be able to bring the old text back.
+    /// Replace whole text (e.g. file open). Resets selection/search, drops
+    /// undo history, and marks the buffer clean: this is a different
+    /// document, not an edit to the previous one, so undo must not be able
+    /// to bring the old text back.
     ///
     /// Rehighlights directly from `text` (the caller's own `&str`) rather
     /// than round-tripping through `self.buffer.text().to_string()` — for
@@ -304,6 +403,7 @@ impl EditorState {
             text: text.to_string(),
         }]);
         self.buffer.clear_history();
+        self.saved_revision = self.buffer.revision();
         self.end_typing_run();
         self.marked = None;
         self.composition_group = None;

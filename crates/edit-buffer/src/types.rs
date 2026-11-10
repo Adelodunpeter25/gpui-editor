@@ -44,6 +44,10 @@ struct UndoStep {
 #[derive(Debug, Clone)]
 struct UndoEntry {
     steps: Vec<UndoStep>,
+    /// Content revision before the first step / after the last one, so
+    /// undo and redo restore the revision along with the text.
+    before: u64,
+    after: u64,
     /// Calls sharing this id merge into this entry (typing-run grouping).
     group: Option<u64>,
 }
@@ -56,6 +60,10 @@ pub struct Buffer {
     redo: Vec<UndoEntry>,
     /// Max undo depth. 0 disables history (readonly low-RAM mode).
     max_history: usize,
+    /// Identity of the current content (see `revision`).
+    revision: u64,
+    /// Allocator for fresh revisions.
+    next_revision: u64,
 }
 
 impl Buffer {
@@ -66,6 +74,8 @@ impl Buffer {
             undo: Vec::new(),
             redo: Vec::new(),
             max_history: 100,
+            revision: 0,
+            next_revision: 0,
         }
     }
 
@@ -77,11 +87,21 @@ impl Buffer {
             undo: Vec::new(),
             redo: Vec::new(),
             max_history: 0,
+            revision: 0,
+            next_revision: 0,
         }
     }
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Identity of the current *content*, unlike `version` (which only ever
+    /// grows): every edit moves to a fresh revision, and undo/redo move back
+    /// to the revision the text had at that point. Two equal revisions mean
+    /// identical text — what "modified since last save" compares.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn len_chars(&self) -> usize {
@@ -178,16 +198,22 @@ impl Buffer {
         }
         let step = self.apply(edits);
         self.version += 1;
+        let before = self.revision;
+        self.next_revision += 1;
+        self.revision = self.next_revision;
         if self.max_history > 0 {
             self.redo.clear();
             if let (Some(g), Some(last)) = (group, self.undo.last_mut()) {
                 if last.group == Some(g) {
                     last.steps.push(step);
+                    last.after = self.revision;
                     return self.version;
                 }
             }
             self.undo.push(UndoEntry {
                 steps: vec![step],
+                before,
+                after: self.revision,
                 group,
             });
             if self.undo.len() > self.max_history {
@@ -264,6 +290,7 @@ impl Buffer {
         for step in entry.steps.iter().rev() {
             self.replace_all(&step.inverse);
         }
+        self.revision = entry.before;
         self.version += 1;
         self.redo.push(entry);
         Some(self.version)
@@ -275,6 +302,7 @@ impl Buffer {
         for step in &entry.steps {
             self.replace_all(&step.forward);
         }
+        self.revision = entry.after;
         self.version += 1;
         self.undo.push(entry);
         if self.undo.len() > self.max_history.max(1) {

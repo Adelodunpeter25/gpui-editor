@@ -255,3 +255,38 @@ fn utf16_offsets_convert_both_ways_and_clamp() {
     assert_eq!(b.utf16_to_char(4), 3);
     assert_eq!(b.utf16_to_char(99), 3);
 }
+
+/// `revision` names the content: edits move to a new one, undo/redo return
+/// to the one the text had — including across a coalesced run.
+#[test]
+fn revision_follows_content_through_undo_and_redo() {
+    let mut b = Buffer::from_text("a");
+    let clean = b.revision();
+    grouped(&mut b, 1..1, "b", 1);
+    grouped(&mut b, 2..2, "c", 1);
+    let typed = b.revision();
+    assert_ne!(typed, clean);
+    b.edit(&[Edit {
+        range: 0..1,
+        text: "A".into(),
+    }]);
+    let capitalised = b.revision();
+    assert_ne!(capitalised, typed);
+
+    b.undo();
+    assert_eq!(b.revision(), typed);
+    b.undo();
+    assert_eq!(b.revision(), clean);
+    b.redo();
+    assert_eq!(b.revision(), typed);
+    b.redo();
+    assert_eq!(b.revision(), capitalised);
+
+    // Retyping the same text is still a new revision.
+    b.undo();
+    b.edit(&[Edit {
+        range: 0..1,
+        text: "A".into(),
+    }]);
+    assert_ne!(b.revision(), capitalised);
+}
