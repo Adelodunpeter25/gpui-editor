@@ -1,7 +1,7 @@
 //! Saving: dirty tracking, the default atomic on-disk write, the host save
 //! handler, and the cmd/ctrl-s binding.
 
-use editor_ui::{EditorEvent, EditorState, EditorView, SaveRequest, SaveStatus};
+use editor_ui::{EditorEvent, EditorState, EditorView, LineEnding, SaveRequest, SaveStatus};
 use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext};
 use std::cell::RefCell;
 use std::fs;
@@ -126,15 +126,67 @@ fn open_edit_save_round_trips_through_the_file(cx: &mut TestAppContext) {
     assert_eq!(dir.entries(), vec!["a.txt".to_string()]);
 }
 
-/// Line endings are written back exactly as loaded.
+/// A CRLF file is edited as `\n` in the buffer — so a caret can't land
+/// inside a `\r\n` — and written back as CRLF, new lines included.
 #[gpui::test]
-fn crlf_line_endings_survive_a_save(cx: &mut TestAppContext) {
+fn crlf_files_edit_as_lf_and_save_as_crlf(cx: &mut TestAppContext) {
     let dir = TempDir::new("crlf");
     let path = dir.file("a.txt", "one\r\ntwo\r\n");
     let state = cx.update(|cx| cx.new(|_| EditorState::open(&path, None).unwrap()));
-    state.update(cx, |s, cx| s.type_text(0..0, "x", cx));
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_ending(), LineEnding::CrLf);
+        assert_eq!(s.text(), "one\ntwo\n");
+        assert_eq!(s.line_text(0), "one");
+        // End of line 0 is right before its (single-char) break.
+        assert_eq!(s.line_end_offset(0), 3);
+        assert!(!s.is_dirty());
+    });
+    state.update(cx, |s, cx| {
+        s.type_text(3..3, "!", cx);
+        let (range, text) = s.newline_edit(4);
+        s.replace_range(range, &text, cx);
+        // Pasted CRLF text is normalized on the way in.
+        s.replace_range(5..5, "x\r\ny", cx);
+    });
+    state.read_with(cx, |s, _| assert_eq!(s.text(), "one!\nx\ny\ntwo\n"));
     assert!(save(cx, &state));
-    assert_eq!(fs::read(&path).unwrap(), b"xone\r\ntwo\r\n");
+    assert_eq!(fs::read(&path).unwrap(), b"one!\r\nx\r\ny\r\ntwo\r\n");
+}
+
+/// The save handler gets the bytes to persist, line ending applied; and
+/// `set_line_ending` converts the file on its next save.
+#[gpui::test]
+fn line_ending_can_be_converted_and_reaches_the_handler(cx: &mut TestAppContext) {
+    let dir = TempDir::new("convert");
+    let path = dir.file("a.txt", "a\nb\n");
+    let state = cx.update(|cx| cx.new(|_| EditorState::open(&path, None).unwrap()));
+    state.read_with(cx, |s, _| assert_eq!(s.line_ending(), LineEnding::Lf));
+    state.update(cx, |s, _| s.set_line_ending(LineEnding::CrLf));
+    assert!(save(cx, &state));
+    assert_eq!(fs::read(&path).unwrap(), b"a\r\nb\r\n");
+
+    let seen: Rc<RefCell<String>> = Rc::default();
+    let sink = seen.clone();
+    state.update(cx, |s, _| {
+        s.set_save_handler(Some(Box::new(move |request| {
+            *sink.borrow_mut() = request.text;
+            Ok(SaveStatus::Saved)
+        })))
+    });
+    assert!(save(cx, &state));
+    assert_eq!(*seen.borrow(), "a\r\nb\r\n");
+}
+
+/// `set_text` re-detects the ending of the newly loaded text.
+#[gpui::test]
+fn set_text_redetects_the_line_ending(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("a\r\nb", None)));
+    state.read_with(cx, |s, _| assert_eq!(s.line_ending(), LineEnding::CrLf));
+    state.update(cx, |s, cx| s.set_text("a\nb", cx));
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.line_ending(), LineEnding::Lf);
+        assert_eq!(s.text(), "a\nb");
+    });
 }
 
 #[gpui::test]

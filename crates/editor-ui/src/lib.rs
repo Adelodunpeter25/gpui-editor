@@ -25,6 +25,7 @@ mod view;
 mod wrap;
 
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
+pub use edit_buffer::LineEnding;
 pub use diff_view::{DiffState, DiffView};
 pub use input::{init, CancelComment, Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 pub use save::{EditorEvent, SaveHandler, SaveRequest, SaveStatus};

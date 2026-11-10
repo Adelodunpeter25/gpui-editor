@@ -1,4 +1,4 @@
-use edit_buffer::{Buffer, Edit};
+use edit_buffer::{Buffer, Edit, LineEnding};
 
 #[test]
 fn edit_bumps_version_and_reads_lines() {
@@ -289,4 +289,34 @@ fn revision_follows_content_through_undo_and_redo() {
         text: "A".into(),
     }]);
     assert_ne!(b.revision(), capitalised);
+}
+
+#[test]
+fn line_ending_is_detected_from_the_first_break() {
+    assert_eq!(LineEnding::detect("no breaks"), LineEnding::Lf);
+    assert_eq!(LineEnding::detect("a\nb\r\n"), LineEnding::Lf);
+    assert_eq!(LineEnding::detect("a\r\nb\n"), LineEnding::CrLf);
+    assert_eq!(LineEnding::detect("a\rb"), LineEnding::Cr);
+    assert_eq!(LineEnding::detect("a\r"), LineEnding::Cr);
+}
+
+#[test]
+fn normalize_turns_every_break_into_lf_and_apply_restores_it() {
+    assert_eq!(LineEnding::normalize("a\r\nb\rc\nd\r"), "a\nb\nc\nd\n");
+    // Nothing to change: no copy is made.
+    assert!(matches!(
+        LineEnding::normalize("a\nb"),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    assert_eq!(LineEnding::CrLf.apply("a\nb\n"), "a\r\nb\r\n");
+    assert_eq!(LineEnding::Cr.apply("a\nb"), "a\rb");
+    assert_eq!(LineEnding::Lf.apply("a\nb"), "a\nb");
+}
+
+/// `line_text` never returns the line break, whichever kind it is.
+#[test]
+fn line_text_strips_any_line_break() {
+    let b = Buffer::from_text("a\r\nb\rc\u{2028}d\ne");
+    let lines: Vec<String> = (0..b.line_count()).map(|r| b.line_text(r)).collect();
+    assert_eq!(lines, ["a", "b", "c", "d", "e"]);
 }

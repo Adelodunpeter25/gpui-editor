@@ -7,7 +7,7 @@
 //! `FontConfig`, …) live in `types.rs`, the retained view handle in
 //! `view.rs`, and the `Render` impl plus its paint helpers in `lib.rs`.
 
-use edit_buffer::{Buffer, Edit, Point};
+use edit_buffer::{Buffer, Edit, LineEnding, Point};
 use gpui::{px, AppContext, Context, EventEmitter, Pixels};
 use std::cell::RefCell;
 use std::io;
@@ -57,6 +57,9 @@ pub struct EditorState {
     next_group: u64,
     /// When the last typing edit landed — decides run continuation.
     last_typing: Option<Instant>,
+    /// Line break the document uses on disk. The buffer itself holds `\n`
+    /// only; this is re-applied on save.
+    line_ending: LineEnding,
     /// File this buffer is bound to — where `save` writes by default.
     path: Option<PathBuf>,
     /// Host override for `save` (remote files, save-as, format-on-save).
@@ -114,13 +117,16 @@ struct RowWidthCache {
 
 impl EditorState {
     pub fn readonly(text: &str, language: Option<&'static Language>) -> Self {
-        let buffer = Buffer::from_text_readonly(text);
-        Self::from_buffer(buffer, language, Mode::ReadOnly)
+        let buffer = Buffer::from_text_readonly(&LineEnding::normalize(text));
+        Self::from_buffer(buffer, language, Mode::ReadOnly).with_line_ending(LineEnding::detect(text))
     }
 
+    /// Editable buffer over `text`. Line breaks are normalized to `\n` in
+    /// the buffer (so `text()` and every offset are `\n`-based); the
+    /// ending `text` used is remembered and written back by `save`.
     pub fn editable(text: &str, language: Option<&'static Language>) -> Self {
-        let buffer = Buffer::from_text(text);
-        Self::from_buffer(buffer, language, Mode::Editable)
+        let buffer = Buffer::from_text(&LineEnding::normalize(text));
+        Self::from_buffer(buffer, language, Mode::Editable).with_line_ending(LineEnding::detect(text))
     }
 
     /// Open `path` for editing: reads it (UTF-8) and binds the editor to
@@ -150,6 +156,7 @@ impl EditorState {
             typing_group: None,
             next_group: 0,
             last_typing: None,
+            line_ending: LineEnding::default(),
             path: None,
             save_handler: None,
             saved_revision: 0,
@@ -227,8 +234,10 @@ impl EditorState {
         self.buffer.line_text(row)
     }
 
-    /// Full buffer text, owned. Allocates — for occasional whole-buffer use
-    /// (e.g. feeding a `diff::DiffState`), not the per-frame render path.
+    /// Full buffer text, owned, with `\n` line breaks whatever the file
+    /// uses on disk (see `line_ending`). Allocates — for occasional
+    /// whole-buffer use (e.g. feeding a `diff::DiffState`), not the
+    /// per-frame render path.
     pub fn text(&self) -> String {
         self.buffer.text().to_string()
     }
@@ -238,6 +247,23 @@ impl EditorState {
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.mode = mode;
         self
+    }
+
+    fn with_line_ending(mut self, ending: LineEnding) -> Self {
+        self.line_ending = ending;
+        self
+    }
+
+    /// Line break `save` writes. Detected from the loaded text (first break
+    /// wins; a file mixing endings is saved with that one throughout).
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    /// Convert the document to a different line break on its next save.
+    /// Doesn't change the buffer or the dirty state.
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        self.line_ending = ending;
     }
 
     /// Bind the editor to a file path (see `save`).
@@ -295,12 +321,15 @@ impl EditorState {
         let revision = self.buffer.revision();
         let result = if let Some(handler) = &self.save_handler {
             handler(SaveRequest {
-                text: self.buffer.text().to_string(),
+                text: self
+                    .line_ending
+                    .apply(&self.buffer.text().to_string())
+                    .into_owned(),
                 path: self.path.clone(),
                 revision,
             })
         } else if let Some(path) = &self.path {
-            write_atomic(path, self.buffer.text()).map(|()| SaveStatus::Saved)
+            write_atomic(path, self.buffer.text(), self.line_ending).map(|()| SaveStatus::Saved)
         } else {
             return false;
         };
@@ -397,6 +426,8 @@ impl EditorState {
     /// the file-open path this avoids a full extra copy of the file on top
     /// of the ones already needed to read it and build the rope.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.line_ending = LineEnding::detect(text);
+        let text = &*LineEnding::normalize(text);
         let len = self.buffer.len_chars();
         self.buffer.edit(&[Edit {
             range: 0..len,
@@ -448,6 +479,7 @@ impl EditorState {
         if self.is_readonly() {
             return;
         }
+        let text = &*LineEnding::normalize(text);
         let start = range.start.min(self.buffer.len_chars());
         self.replace_impl(range, text, EditKind::Composing, cx);
         let len = text.chars().count();
@@ -521,6 +553,8 @@ impl EditorState {
         if self.is_readonly() {
             return;
         }
+        // Pasted or typed text may carry `\r\n`; the buffer holds `\n` only.
+        let text = &*LineEnding::normalize(text);
         let group = self.undo_group_for(kind);
         let clamped_start = range.start.min(self.buffer.len_chars());
         let clamped_end = range.end.min(self.buffer.len_chars());

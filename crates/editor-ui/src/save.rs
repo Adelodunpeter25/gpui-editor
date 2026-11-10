@@ -2,6 +2,7 @@
 //! `EditorEvent`) and the default on-disk writer. `EditorState::save` in
 //! `state.rs` decides *whether* and *who* saves; this file is the how.
 
+use edit_buffer::LineEnding;
 use ropey::Rope;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -10,7 +11,8 @@ use std::path::{Path, PathBuf};
 /// What a save handler is asked to persist.
 #[derive(Debug, Clone)]
 pub struct SaveRequest {
-    /// Full buffer text at the time of the save.
+    /// Full buffer text at the time of the save, with the document's line
+    /// ending applied — the exact bytes to persist.
     pub text: String,
     /// The file the editor is bound to, if any.
     pub path: Option<PathBuf>,
@@ -42,11 +44,12 @@ pub enum EditorEvent {
     SaveFailed(String),
 }
 
-/// Write `text` to `path` without ever leaving a half-written file behind:
+/// Write `text` (holding `\n` breaks) to `path` with `ending` applied,
+/// without ever leaving a half-written file behind:
 /// the bytes go to a temporary sibling first, which then replaces the
 /// target in one rename. Symlinks are followed (the link survives, its
 /// target is rewritten) and an existing file keeps its permissions.
-pub(crate) fn write_atomic(path: &Path, text: &Rope) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &Rope, ending: LineEnding) -> io::Result<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let file_name = target
         .file_name()
@@ -59,7 +62,7 @@ pub(crate) fn write_atomic(path: &Path, text: &Rope) -> io::Result<()> {
     let written = (|| {
         let mut writer = BufWriter::new(File::create(&temp)?);
         for chunk in text.chunks() {
-            writer.write_all(chunk.as_bytes())?;
+            writer.write_all(ending.apply(chunk).as_bytes())?;
         }
         let file = writer.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;

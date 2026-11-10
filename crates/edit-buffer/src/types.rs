@@ -1,6 +1,7 @@
 //! Data types for `edit-buffer`: `Buffer` (rope-backed text storage) and its
 //! supporting value types.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 use ropey::{Rope, RopeSlice};
@@ -10,6 +11,72 @@ use ropey::{Rope, RopeSlice};
 pub struct Point {
     pub row: u32,
     pub col: u32,
+}
+
+/// The line break a document uses on disk. Buffers that are edited hold
+/// `\n` only (see `normalize`), so a caret can never sit inside a `\r\n`
+/// pair; the original ending is re-applied when the text is written out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    /// `\n` — Unix, macOS.
+    #[default]
+    Lf,
+    /// `\r\n` — Windows.
+    CrLf,
+    /// `\r` — classic Mac OS.
+    Cr,
+}
+
+impl LineEnding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::CrLf => "\r\n",
+            LineEnding::Cr => "\r",
+        }
+    }
+
+    /// The ending of the first line break in `text` (`Lf` if it has none).
+    /// A file mixing endings is treated as using its first one.
+    pub fn detect(text: &str) -> Self {
+        let bytes = text.as_bytes();
+        match bytes.iter().position(|b| *b == b'\n' || *b == b'\r') {
+            Some(ix) if bytes[ix] == b'\n' => LineEnding::Lf,
+            Some(ix) if bytes.get(ix + 1) == Some(&b'\n') => LineEnding::CrLf,
+            Some(_) => LineEnding::Cr,
+            None => LineEnding::Lf,
+        }
+    }
+
+    /// `text` with every `\r\n` and lone `\r` turned into `\n`. Borrows
+    /// when there's nothing to change (the common case), so normalizing an
+    /// already-`\n` file costs one scan and no copy.
+    pub fn normalize(text: &str) -> Cow<'_, str> {
+        if !text.contains('\r') {
+            return Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push('\n');
+            } else {
+                out.push(ch);
+            }
+        }
+        Cow::Owned(out)
+    }
+
+    /// `text` (holding `\n` line breaks) with this ending applied.
+    pub fn apply(self, text: &str) -> Cow<'_, str> {
+        match self {
+            LineEnding::Lf => Cow::Borrowed(text),
+            other => Cow::Owned(text.replace('\n', other.as_str())),
+        }
+    }
 }
 
 /// A single replacement: replace `range` (char offsets) with `text`.
@@ -125,11 +192,22 @@ impl Buffer {
         self.rope.line(row as usize)
     }
 
-    /// Owned line string (strips trailing \n for rendering).
-    /// Prefer `line_slice` in hot paths; this allocates.
+    /// Owned line string without its line break, for rendering. Strips
+    /// whatever break ropey ended the line on (`\n`, `\r\n`, `\r`, and the
+    /// Unicode separators), so the text never carries an invisible trailing
+    /// character. Prefer `line_slice` in hot paths; this allocates.
     pub fn line_text(&self, row: u32) -> String {
-        let s = self.line_slice(row).to_string();
-        s.strip_suffix('\n').unwrap_or(&s).to_string()
+        let mut s = self.line_slice(row).to_string();
+        let trimmed = s
+            .strip_suffix("\r\n")
+            .or_else(|| {
+                s.strip_suffix(['\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'])
+            })
+            .map(str::len);
+        if let Some(len) = trimmed {
+            s.truncate(len);
+        }
+        s
     }
 
     pub fn text(&self) -> &Rope {
