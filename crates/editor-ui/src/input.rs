@@ -1,6 +1,6 @@
 //! Edit-mode input: the editor's actions, their default key bindings, and
-//! the `on_key_down` router that turns keystrokes into buffer edits and
-//! caret motion. The `Render` impl (`render.rs`) wires `handle_edit_key` in;
+//! the `on_key_down` router that turns control keys into buffer edits and
+//! caret motion (typed text goes through `ime.rs`). The `Render` impl (`render.rs`) wires `handle_edit_key` in;
 //! the model side of every edit lives in `EditorState`.
 
 use gpui::*;
@@ -33,10 +33,12 @@ pub fn init(cx: &mut App) {
 }
 
 impl EditorView {
-    /// Route one key event to the buffer in editable mode. Editing keys are
-    /// handled on raw `on_key_down` rather than as bound actions: printable
-    /// input has no stable binding name, and motion needs no payload. The
-    /// `cmd`-combos (undo/redo/cut/paste/copy) stay bound actions. No-op when
+    /// Route one control key (motion, Backspace/Delete, Enter, Tab) to the
+    /// buffer in editable mode. Text itself arrives through the platform
+    /// input handler in `ime.rs`; the `cmd`-combos (undo/redo/cut/paste/
+    /// copy) are bound actions. While an input method is composing, the
+    /// platform offers it these keys first and only forwards the ones it
+    /// declines, so nothing here needs to special-case composition. No-op when
     /// the editor isn't focused or is readonly — readonly tabs keep the viewer
     /// behavior byte for byte.
     pub(crate) fn key_down(
@@ -113,28 +115,11 @@ impl EditorView {
                 });
                 self.reveal_caret.set(true);
             }
-            _ => {
-                // Printable input: `key_char` is the typed character (None for
-                // modifier combos and control keys), already shifted-correct.
-                if event.keystroke.modifiers.control
-                    || event.keystroke.modifiers.platform
-                    || event.keystroke.modifiers.function
-                {
-                    return;
-                }
-                let Some(text) = event.keystroke.key_char.as_deref().filter(|s| !s.is_empty())
-                else {
-                    return;
-                };
-                let text = text.to_string();
-                cx.stop_propagation();
-                self.clear_motion_caches();
-                self.state.update(cx, |s, cx| {
-                    let sel = s.selection().range.clone();
-                    s.type_text(sel, &text, cx);
-                });
-                self.reveal_caret.set(true);
-            }
+            // Everything else — printable characters included — is left
+            // to propagate: the platform delivers text through the input
+            // handler (`ime.rs`), which is what lets dead keys, IME
+            // composition, and the emoji picker work.
+            _ => {}
         }
     }
 

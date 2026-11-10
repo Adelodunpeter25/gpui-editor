@@ -54,6 +54,13 @@ pub struct EditorState {
     next_group: u64,
     /// When the last typing edit landed — decides run continuation.
     last_typing: Option<Instant>,
+    /// In-progress IME composition (dead keys, CJK input): the char range
+    /// of provisional text the input method may still replace. `None` when
+    /// not composing.
+    marked: Option<Range<usize>>,
+    /// Undo group shared by every edit of one composition, so a committed
+    /// composition undoes as a single entry however many updates built it.
+    composition_group: Option<u64>,
     // Row -> highlight spans clipped to that row (rebuilt on edit/highlight).
     // M1 moves this to a shaped-line cache keyed by (row, version).
     // `pub(crate)`: lib.rs's render path reads this directly per visible row.
@@ -65,6 +72,18 @@ pub struct EditorState {
     /// aren't tracked). `RefCell` because reads (`max_line_width`) take
     /// `&self` while filling the cache.
     row_widths: RefCell<Option<RowWidthCache>>,
+}
+
+/// How an edit is recorded in undo history.
+#[derive(Clone, Copy, PartialEq)]
+enum EditKind {
+    /// Its own undo entry (paste, cut, Enter, programmatic edits).
+    Structural,
+    /// Coalesces with neighbouring typing inside `TYPE_GROUP_WINDOW`.
+    Typing,
+    /// One update of an IME composition; all of a composition's updates,
+    /// and the edit that commits it, share one entry.
+    Composing,
 }
 
 /// Identity of a `RowWidthCache`: a different char width (font change) or
@@ -111,6 +130,8 @@ impl EditorState {
             typing_group: None,
             next_group: 0,
             last_typing: None,
+            marked: None,
+            composition_group: None,
             row_spans: Vec::new(),
             row_widths: RefCell::new(None),
         };
@@ -284,6 +305,8 @@ impl EditorState {
         }]);
         self.buffer.clear_history();
         self.end_typing_run();
+        self.marked = None;
+        self.composition_group = None;
         *self.row_widths.borrow_mut() = None;
         self.selection = Selection::default();
         self.rehighlight_from(text, cx);
@@ -300,47 +323,105 @@ impl EditorState {
     /// (paste, cut, programmatic edits). Collapses the selection to the end
     /// of the inserted text. No-op in readonly.
     pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-        self.replace_impl(range, text, false, cx);
+        self.replace_impl(range, text, EditKind::Structural, cx);
     }
 
     /// Typing edit: same as `replace_range`, but consecutive calls within
-    /// `TYPE_GROUP_WINDOW` coalesce into one undo entry. The key handler
-    /// routes printable chars, Backspace, and Delete here.
+    /// `TYPE_GROUP_WINDOW` coalesce into one undo entry. Text input,
+    /// Backspace, and Delete route here.
     pub fn type_text(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-        self.replace_impl(range, text, true, cx);
+        self.replace_impl(range, text, EditKind::Typing, cx);
+    }
+
+    /// IME composition update: replace `range` with provisional `text` and
+    /// mark it as still being composed. `selected` is the caret/selection
+    /// the input method wants inside the new text, in chars relative to its
+    /// start (`None` = caret at its end). Empty `text` cancels the
+    /// composition. The next edit commits it; see `marked_range`.
+    pub fn set_marked_text(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_readonly() {
+            return;
+        }
+        let start = range.start.min(self.buffer.len_chars());
+        self.replace_impl(range, text, EditKind::Composing, cx);
+        let len = text.chars().count();
+        if len == 0 {
+            self.composition_group = None;
+            return;
+        }
+        self.marked = Some(start..start + len);
+        if let Some(selected) = selected {
+            let lo = selected.start.min(selected.end).min(len);
+            let hi = selected.end.max(selected.start).min(len);
+            self.selection = Selection {
+                range: start + lo..start + hi,
+            };
+        }
+    }
+
+    /// Char range of the in-progress IME composition, if any.
+    pub fn marked_range(&self) -> Option<Range<usize>> {
+        self.marked.clone()
+    }
+
+    /// End the composition, keeping its text as ordinary buffer content.
+    pub fn unmark_text(&mut self, cx: &mut Context<Self>) {
+        self.composition_group = None;
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Pick the undo group an edit of `kind` belongs to, updating the
+    /// typing-run and composition bookkeeping.
+    fn undo_group_for(&mut self, kind: EditKind) -> Option<u64> {
+        if kind == EditKind::Composing {
+            self.end_typing_run();
+            if self.composition_group.is_none() {
+                self.composition_group = Some(self.next_group);
+                self.next_group += 1;
+            }
+            return self.composition_group;
+        }
+        // The first edit after a composition commits it: same undo entry.
+        if let Some(group) = self.composition_group.take() {
+            self.end_typing_run();
+            return Some(group);
+        }
+        if kind == EditKind::Structural {
+            self.end_typing_run();
+            return None;
+        }
+        let now = Instant::now();
+        let continues = match (self.typing_group, self.last_typing) {
+            (Some(_), Some(last)) => now.duration_since(last) < TYPE_GROUP_WINDOW,
+            _ => false,
+        };
+        if !continues {
+            self.typing_group = Some(self.next_group);
+            self.next_group += 1;
+        }
+        self.last_typing = Some(now);
+        self.typing_group
     }
 
     fn replace_impl(
         &mut self,
         range: Range<usize>,
         text: &str,
-        typing: bool,
+        kind: EditKind,
         cx: &mut Context<Self>,
     ) {
         if self.is_readonly() {
             return;
         }
-        let group = if typing {
-            let now = Instant::now();
-            let continues = match (self.typing_group, self.last_typing) {
-                (Some(_), Some(last)) => now.duration_since(last) < TYPE_GROUP_WINDOW,
-                _ => false,
-            };
-            let group = if continues {
-                self.typing_group
-            } else {
-                let g = self.next_group;
-                self.next_group += 1;
-                Some(g)
-            };
-            self.typing_group = group;
-            self.last_typing = Some(now);
-            group
-        } else {
-            self.typing_group = None;
-            self.last_typing = None;
-            None
-        };
+        let group = self.undo_group_for(kind);
         let clamped_start = range.start.min(self.buffer.len_chars());
         let clamped_end = range.end.min(self.buffer.len_chars());
         let start_row = self.buffer.offset_to_point(clamped_start).row;
@@ -355,6 +436,7 @@ impl EditorState {
         self.selection = Selection {
             range: caret..caret,
         };
+        self.marked = None;
         self.rehighlight(cx);
         self.rerun_search();
         // Every buffer mutation repaints its views: callers (key handlers,
@@ -387,8 +469,9 @@ impl EditorState {
     }
 
     fn after_history_move(&mut self, cx: &mut Context<Self>) {
-        self.typing_group = None;
-        self.last_typing = None;
+        self.end_typing_run();
+        self.marked = None;
+        self.composition_group = None;
         // Undo/redo can shrink or shift any rows; the affected range isn't
         // tracked here, so let the next read do a full width scan.
         *self.row_widths.borrow_mut() = None;
@@ -403,9 +486,13 @@ impl EditorState {
 
     /// Set the selection (clicks, drags, caret motion). Moving the caret
     /// ends the current typing run, so the next keystroke starts its own
-    /// undo entry.
+    /// undo entry, and commits any IME composition in progress.
     pub fn set_selection(&mut self, range: Range<usize>) {
         self.end_typing_run();
+        // Moving the caret away abandons a composition: its text stays as
+        // typed, and the next input starts fresh at the new caret.
+        self.marked = None;
+        self.composition_group = None;
         self.selection = Selection { range };
     }
 
@@ -487,6 +574,27 @@ impl EditorState {
     /// (row, col) point for a char offset.
     pub fn offset_to_point(&self, offset: usize) -> Point {
         self.buffer.offset_to_point(offset)
+    }
+
+    /// Buffer length in UTF-16 code units — the unit platform text-input
+    /// (IME) APIs address text in.
+    pub fn len_utf16(&self) -> usize {
+        self.buffer.len_utf16()
+    }
+
+    /// Char offset -> UTF-16 code-unit offset (clamped).
+    pub fn offset_to_utf16(&self, offset: usize) -> usize {
+        self.buffer.char_to_utf16(offset)
+    }
+
+    /// UTF-16 code-unit offset -> char offset (clamped).
+    pub fn utf16_to_offset(&self, offset: usize) -> usize {
+        self.buffer.utf16_to_char(offset)
+    }
+
+    /// Owned text for a char-offset range, clamped to the buffer.
+    pub fn text_in_range(&self, range: Range<usize>) -> String {
+        self.buffer.slice_text(range)
     }
 
     /// Widest row's display width (h-scroll sizing). Served from the

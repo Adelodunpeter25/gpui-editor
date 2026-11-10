@@ -19,7 +19,7 @@ use crate::measure::{
 };
 use crate::row::{render_line, resolve_color, row_local_selection, RowMeta};
 use crate::scrollbar::{render_h_scrollbar, render_scrollbar, scrollbar_thumb_height, scrollbar_thumb_size};
-use crate::types::{comment_target_from, Mode};
+use crate::types::comment_target_from;
 use crate::view::EditorView;
 
 impl Render for EditorView {
@@ -128,6 +128,10 @@ impl Render for EditorView {
 
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
+        let viewport_origin = self.viewport_origin.clone();
+        let editable = !self.state.read(cx).is_readonly();
+        let input_focus = self.focus_handle.clone();
+        let input_view = cx.entity();
         let wrap_cache = self.wrap_cache.clone();
         let row_font = font.clone();
         let interaction = RowInteraction {
@@ -198,8 +202,20 @@ impl Render for EditorView {
                     move |bounds, _window, _cx| {
                         viewport_height.set(bounds.size.height);
                         viewport_width.set(bounds.size.width);
+                        viewport_origin.set(bounds.origin);
                     },
-                    |_, _, _, _| {},
+                    // Paint is the only phase an input handler can be
+                    // registered in. It makes the focused, editable editor
+                    // the window's text-input target (typing, IME).
+                    move |bounds, _, window, cx| {
+                        if editable {
+                            window.handle_input(
+                                &input_focus,
+                                ElementInputHandler::new(bounds, input_view),
+                                cx,
+                            );
+                        }
+                    },
                 )
                 .absolute()
                 .size_full(),
@@ -211,11 +227,12 @@ impl Render for EditorView {
                     cx.processor(move |this, range: Range<usize>, window, cx| {
                         let state = this.state.read(cx);
                         let selection = state.selection().range.clone();
+                        let marked = state.marked_range();
                         // Caret: only an empty selection in a focused,
                         // editable editor paints one (a non-empty selection
                         // keeps today's highlight; readonly never shows it).
                         let caret_offset = if selection.is_empty()
-                            && state.mode() == Mode::Editable
+                            && !state.is_readonly()
                             && this.focus_handle.is_focused(window)
                         {
                             Some(selection.start)
@@ -281,6 +298,10 @@ impl Render for EditorView {
                                 let row_selection =
                                     row_local_selection(&selection, row_start, row_end)
                                         .and_then(|s| clip_to_subrange(&s, &sub_range));
+                                let marked = marked
+                                    .as_ref()
+                                    .and_then(|m| row_local_selection(m, row_start, row_end))
+                                    .and_then(|m| clip_to_subrange(&m, &sub_range));
                                 // Caret column within this sub-line. A caret
                                 // sitting exactly on a sub boundary would
                                 // match two sub-lines (end of one, start of
@@ -323,6 +344,7 @@ impl Render for EditorView {
                                     comment_hover_row: interaction.comment_hover_row.get(),
                                     comment_drag: interaction.comment_drag.get(),
                                     caret_col,
+                                    marked,
                                     char_width,
                                     tab_width: state.tab_width(),
                                 };

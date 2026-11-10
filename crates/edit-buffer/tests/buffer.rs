@@ -236,3 +236,22 @@ fn clear_history_drops_undo_and_redo() {
     assert!(!b.can_undo() && !b.can_redo());
     assert_eq!(b.text().to_string(), "ab");
 }
+
+/// "😀" is one char but two UTF-16 code units.
+#[test]
+fn utf16_offsets_convert_both_ways_and_clamp() {
+    let b = Buffer::from_text("a😀b");
+    assert_eq!(b.len_chars(), 3);
+    assert_eq!(b.len_utf16(), 4);
+    assert_eq!(b.char_to_utf16(0), 0);
+    assert_eq!(b.char_to_utf16(1), 1);
+    assert_eq!(b.char_to_utf16(2), 3);
+    assert_eq!(b.char_to_utf16(3), 4);
+    assert_eq!(b.char_to_utf16(99), 4);
+    assert_eq!(b.utf16_to_char(0), 0);
+    assert_eq!(b.utf16_to_char(1), 1);
+    assert_eq!(b.utf16_to_char(2), 1); // inside the surrogate pair
+    assert_eq!(b.utf16_to_char(3), 2);
+    assert_eq!(b.utf16_to_char(4), 3);
+    assert_eq!(b.utf16_to_char(99), 3);
+}

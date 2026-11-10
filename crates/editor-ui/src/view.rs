@@ -66,6 +66,10 @@ pub struct EditorView {
     /// crossing a shorter line doesn't drift horizontally. In char columns;
     /// cleared by horizontal motion, clicks, and edits.
     pub(crate) goal_col: Rc<Cell<Option<u32>>>,
+    /// Window position of the editor's top-left corner, captured by the
+    /// measuring `canvas` each frame — maps window points back to text for
+    /// the input method.
+    pub(crate) viewport_origin: Rc<Cell<gpui::Point<Pixels>>>,
     /// Set by keyboard edits and caret motion; the next render scrolls the
     /// caret back into the viewport and clears it. Deferred to render
     /// because that's where the wrap cache and measurements are current.
@@ -93,6 +97,7 @@ impl EditorView {
             key_anchor: Rc::new(Cell::new(None)),
             goal_col: Rc::new(Cell::new(None)),
             reveal_caret: Rc::new(Cell::new(false)),
+            viewport_origin: Rc::new(Cell::new(gpui::Point::default())),
         }
     }
 
@@ -136,6 +141,70 @@ impl EditorView {
         let x = char_width * (indent_chars as f32)
             + crate::text_display_width(&prefix, char_width, state.tab_width());
         (visual_row, x)
+    }
+
+    /// Window position where row 0's text starts: the editor's corner plus
+    /// the list's top padding and the gutter, shifted by the live scroll
+    /// offset. Text at visual row `r`, x `x` paints at this + `(x, r * line
+    /// height)`.
+    pub(crate) fn text_origin(
+        &self,
+        editor_origin: gpui::Point<Pixels>,
+        rem: Pixels,
+    ) -> gpui::Point<Pixels> {
+        let scroll = self.scroll_handle.0.borrow().base_handle.offset();
+        gpui::point(
+            editor_origin.x + rem * crate::CONTENT_X_REM + scroll.x,
+            editor_origin.y + rem * 0.5 + scroll.y,
+        )
+    }
+
+    /// Inverse of `offset_position`: the buffer offset nearest a window
+    /// point, or `None` if the point is above/below the text.
+    pub(crate) fn offset_for_point(
+        &self,
+        point: gpui::Point<Pixels>,
+        char_width: Pixels,
+        rem: Pixels,
+        cx: &App,
+    ) -> Option<usize> {
+        let state = self.state.read(cx);
+        let origin = self.text_origin(self.viewport_origin.get(), rem);
+        let y = point.y - origin.y;
+        if y < px(0.) {
+            return None;
+        }
+        let visual_row = (y / state.font().line_height).floor() as usize;
+        let cache = self.wrap_cache.borrow();
+        if visual_row >= cache.visual_row_count() {
+            return None;
+        }
+        let (row, sub) = cache.resolve(visual_row);
+        if row >= state.line_count() {
+            return None;
+        }
+        let line = state.line_text(row);
+        let row_len = line.chars().count();
+        let sub_range = cache.sub_range(row, sub, row_len);
+        let sub_start = sub_range.start.min(row_len);
+        let sub_text: String = line
+            .chars()
+            .skip(sub_start)
+            .take(sub_range.end.saturating_sub(sub_start))
+            .collect();
+        let indent = if sub > 0 {
+            char_width * (cache.indent_chars(row) as f32)
+        } else {
+            px(0.)
+        };
+        let col = sub_start as u32
+            + crate::measure::column_for_x(
+                point.x - origin.x - indent,
+                char_width,
+                &sub_text,
+                state.tab_width(),
+            );
+        Some(state.point_to_offset(edit_buffer::Point { row, col }))
     }
 
     /// Bring the caret back into view: vertically via the list's own

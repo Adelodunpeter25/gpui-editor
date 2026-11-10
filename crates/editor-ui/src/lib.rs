@@ -7,10 +7,12 @@
 //! in `diff_view.rs`, and — split out of what used to be one large `lib.rs`
 //! — the `Render` impl (`render.rs`), per-row painting (`row.rs`),
 //! scrollbars (`scrollbar.rs`), measurement/hit-testing (`measure.rs`), and
-//! edit-mode input routing (`input.rs`). This root file is module
+//! edit-mode key routing (`input.rs`) and platform text input / IME
+//! (`ime.rs`). This root file is module
 //! declarations + re-exports only.
 
 mod diff_view;
+mod ime;
 mod input;
 mod measure;
 mod render;

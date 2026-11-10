@@ -123,6 +123,23 @@ impl Buffer {
         self.rope.slice(start..end).to_string()
     }
 
+    /// Buffer length in UTF-16 code units (what platform text-input APIs
+    /// count in).
+    pub fn len_utf16(&self) -> usize {
+        self.rope.len_utf16_cu()
+    }
+
+    /// Char offset -> UTF-16 code-unit offset (clamped).
+    pub fn char_to_utf16(&self, offset: usize) -> usize {
+        self.rope.char_to_utf16_cu(offset.min(self.len_chars()))
+    }
+
+    /// UTF-16 code-unit offset -> char offset (clamped). An offset landing
+    /// inside a surrogate pair resolves to the char that pair encodes.
+    pub fn utf16_to_char(&self, offset: usize) -> usize {
+        self.rope.utf16_cu_to_char(offset.min(self.len_utf16()))
+    }
+
     /// Char offset -> Point.
     pub fn offset_to_point(&self, offset: usize) -> Point {
         let line = self.rope.char_to_line(offset.min(self.len_chars()));

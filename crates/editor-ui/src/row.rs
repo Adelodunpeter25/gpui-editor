@@ -93,6 +93,9 @@ pub(crate) struct RowMeta {
     /// Caret column within this sub-line's chars, when the caret is on this
     /// sub-line and the editor is focused + editable (empty selection).
     pub(crate) caret_col: Option<usize>,
+    /// In-progress IME composition clipped to this sub-line's chars —
+    /// underlined so provisional text reads as not yet committed.
+    pub(crate) marked: Option<Range<usize>>,
     /// Measured monospace glyph advance — drives the caret's x position.
     pub(crate) char_width: Pixels,
     pub(crate) tab_width: u32,
@@ -120,6 +123,7 @@ pub(crate) fn render_line(
         comment_hover_row,
         comment_drag,
         caret_col,
+        marked,
         char_width,
         tab_width,
     } = meta;
@@ -160,6 +164,20 @@ pub(crate) fn render_line(
             .h_full()
             .bg(rgba(0xffffffcc))
             .rounded_xs()
+    });
+
+    let marked_el = marked.map(|range| {
+        let before: String = text.chars().take(range.start).collect();
+        let through: String = text.chars().take(range.end).collect();
+        let start_x = text_display_width(&before, char_width, tab_width);
+        let end_x = text_display_width(&through, char_width, tab_width);
+        div()
+            .absolute()
+            .bottom(px(1.0))
+            .left(indent_px + start_x)
+            .w(end_x - start_x)
+            .h(px(1.0))
+            .bg(rgba(0xffffffcc))
     });
 
     let row_el = div()
@@ -216,6 +234,7 @@ pub(crate) fn render_line(
                 .ml(content_x)
                 .pl(indent_px)
                 .child(render_spans(text, runs, selection))
+                .children(marked_el)
                 .children(caret_el)
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     let width = measure_char_width(&down.char_width, &down_font, window);
