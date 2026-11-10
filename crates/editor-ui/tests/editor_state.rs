@@ -453,3 +453,30 @@ fn moving_the_caret_splits_the_typing_run(cx: &mut TestAppContext) {
     state.update(cx, |s, cx| s.undo(cx));
     state.read_with(cx, |s, _| assert_eq!(s.text(), "hello"));
 }
+
+// -- set_text -----------------------------------------------------------------
+
+/// Loading new text is not an edit: undo can't bring the old document back,
+/// and typing afterwards starts a fresh undo entry.
+#[gpui::test]
+fn set_text_clears_history_and_the_typing_run(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("old", None)));
+    state.update(cx, |s, cx| {
+        s.type_text(3..3, "!", cx);
+        s.set_text("new", cx);
+    });
+    state.read_with(cx, |s, _| {
+        assert!(!s.can_undo());
+        assert!(!s.can_redo());
+        assert_eq!(s.selection().range, 0..0);
+    });
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| assert_eq!(s.text(), "new"));
+
+    state.update(cx, |s, cx| s.type_text(3..3, "er", cx));
+    state.update(cx, |s, cx| s.undo(cx));
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.text(), "new");
+        assert!(!s.can_undo());
+    });
+}

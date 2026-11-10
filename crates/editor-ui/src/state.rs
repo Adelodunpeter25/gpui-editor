@@ -268,7 +268,9 @@ impl EditorState {
         self.rehighlight(cx);
     }
 
-    /// Replace whole text (e.g. file open). Resets selection/search.
+    /// Replace whole text (e.g. file open). Resets selection/search and
+    /// drops undo history: this is a different document, not an edit to the
+    /// previous one, so undo must not be able to bring the old text back.
     ///
     /// Rehighlights directly from `text` (the caller's own `&str`) rather
     /// than round-tripping through `self.buffer.text().to_string()` — for
@@ -280,6 +282,8 @@ impl EditorState {
             range: 0..len,
             text: text.to_string(),
         }]);
+        self.buffer.clear_history();
+        self.end_typing_run();
         *self.row_widths.borrow_mut() = None;
         self.selection = Selection::default();
         self.rehighlight_from(text, cx);
