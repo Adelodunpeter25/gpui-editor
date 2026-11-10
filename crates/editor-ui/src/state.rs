@@ -284,6 +284,7 @@ impl EditorState {
         self.selection = Selection::default();
         self.rehighlight_from(text, cx);
         self.rerun_search();
+        cx.notify();
     }
 
     /// M2 path: insert at char offset. No-op in readonly.
@@ -352,6 +353,9 @@ impl EditorState {
         };
         self.rehighlight(cx);
         self.rerun_search();
+        // Every buffer mutation repaints its views: callers (key handlers,
+        // hosts) must not have to remember to notify.
+        cx.notify();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -388,6 +392,9 @@ impl EditorState {
         self.selection = Selection { range: head..head };
         self.rehighlight(cx);
         self.rerun_search();
+        // Every buffer mutation repaints its views: callers (key handlers,
+        // hosts) must not have to remember to notify.
+        cx.notify();
     }
 
     pub fn set_selection(&mut self, range: Range<usize>) {

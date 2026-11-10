@@ -348,3 +348,46 @@ fn line_end_offset_excludes_the_newline() {
     assert_eq!(s.line_end_offset(2), 6);
     assert_eq!(s.len_chars(), 6);
 }
+
+// -- repaint ------------------------------------------------------------------
+
+/// Counts how many times `state` notifies its observers while `f` runs.
+fn notifications(
+    cx: &mut TestAppContext,
+    state: &gpui::Entity<EditorState>,
+    f: impl FnOnce(&mut EditorState, &mut gpui::Context<EditorState>),
+) -> usize {
+    let count = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let seen = count.clone();
+    let subscription = cx.update(|cx| {
+        cx.observe(state, move |_, _| seen.set(seen.get() + 1))
+    });
+    state.update(cx, f);
+    cx.run_until_parked();
+    drop(subscription);
+    count.get()
+}
+
+/// Typing must notify observers, or the view never repaints the new text.
+#[gpui::test]
+fn typing_notifies_observers(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    assert!(notifications(cx, &state, |s, cx| s.type_text(5..5, "!", cx)) > 0);
+    assert!(notifications(cx, &state, |s, cx| s.replace_range(0..1, "H", cx)) > 0);
+}
+
+#[gpui::test]
+fn undo_redo_and_set_text_notify_observers(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("hello", None)));
+    state.update(cx, |s, cx| s.type_text(5..5, "!", cx));
+    assert!(notifications(cx, &state, |s, cx| s.undo(cx)) > 0);
+    assert!(notifications(cx, &state, |s, cx| s.redo(cx)) > 0);
+    assert!(notifications(cx, &state, |s, cx| s.set_text("new", cx)) > 0);
+}
+
+/// Readonly edits are no-ops, so they must not trigger a repaint either.
+#[gpui::test]
+fn readonly_edit_does_not_notify(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::readonly("hello", None)));
+    assert_eq!(notifications(cx, &state, |s, cx| s.type_text(5..5, "!", cx)), 0);
+}
