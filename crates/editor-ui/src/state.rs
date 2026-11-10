@@ -446,20 +446,22 @@ impl EditorState {
         }
     }
 
-    /// The edit Enter performs with the caret at `head`: range + replacement
-    /// text (`"\n" + auto-indent`). Splitting mid-line replaces nothing — it
-    /// inserts; a caret sitting at a line's visual end (just before its
-    /// newline) inserts *after* that newline, so the current line isn't
-    /// split by an empty one. Pure helper, exposed for tests.
+    /// The edit Enter performs with the caret at `head`: an insertion at
+    /// the caret of `"\n"` + auto-indent. The indent is derived from the
+    /// text *before* the caret only, so splitting a line mid-way never
+    /// indents for an opener that ends up on the new line. Pure helper,
+    /// exposed for tests.
     pub fn newline_edit(&self, head: usize) -> (Range<usize>, String) {
+        let head = head.min(self.buffer.len_chars());
         let point = self.offset_to_point(head);
-        let indent = self.indent_for_newline(point.row);
-        if head == self.line_end_offset(point.row) && point.row + 1 < self.line_count() {
-            // At a line's visual end: insert on the far side of its newline.
-            (head + 1..head + 1, format!("\n{indent}"))
-        } else {
-            (head..head, format!("\n{indent}"))
-        }
+        let before: String = self
+            .buffer
+            .line_text(point.row)
+            .chars()
+            .take(point.col as usize)
+            .collect();
+        let indent = self.indent_after(&before);
+        (head..head, format!("\n{indent}"))
     }
 
     /// Char offset for a (row, col) point, clamped by the buffer.
@@ -714,7 +716,12 @@ impl EditorState {
     /// Indent text for a newline inserted after `row`: keep-indent + one extra
     /// level if the line ends with an opener.
     pub fn indent_for_newline(&self, row: u32) -> String {
-        let line = self.buffer.line_text(row);
+        self.indent_after(&self.buffer.line_text(row))
+    }
+
+    /// Indent for a new line following `line`: its leading whitespace, plus
+    /// one level if it ends with an opener.
+    fn indent_after(&self, line: &str) -> String {
         let base: String = line
             .chars()
             .take_while(|c| *c == ' ' || *c == '\t')

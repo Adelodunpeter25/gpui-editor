@@ -321,20 +321,49 @@ fn newline_edit_splits_mid_line_without_indent() {
     assert_eq!(text, "\n");
 }
 
+/// Enter at a line's end inserts at the caret, so the new line opens
+/// directly below and the following line is left untouched.
 #[test]
-fn newline_edit_at_line_end_inserts_after_the_newline() {
+fn newline_edit_at_line_end_inserts_at_the_caret() {
     let s = EditorState::editable("abc\nxyz", None);
     // Caret at offset 3 = visual end of line 0 (before its '\n').
-    let (range, _text) = s.newline_edit(3);
-    assert_eq!(range, 4..4);
+    let (range, text) = s.newline_edit(3);
+    assert_eq!(range, 3..3);
+    assert_eq!(text, "\n");
 }
 
 #[test]
 fn newline_edit_auto_indents_after_an_opener() {
     let s = EditorState::editable("    foo {\n}", None);
     let (range, text) = s.newline_edit(9); // end of "    foo {"
-    assert_eq!(range, 10..10);
+    assert_eq!(range, 9..9);
     assert_eq!(text, "\n        "); // base 4 + one 4-space level
+}
+
+/// The opener check only looks at text before the caret: splitting ahead
+/// of the `{` keeps the base indent without adding a level.
+#[test]
+fn newline_edit_mid_line_ignores_an_opener_after_the_caret() {
+    let s = EditorState::editable("    foo {", None);
+    let (range, text) = s.newline_edit(7); // between "foo" and " {"
+    assert_eq!(range, 7..7);
+    assert_eq!(text, "\n    ");
+}
+
+/// End to end: Enter after `{` opens an indented line and leaves the
+/// closing brace where it was, with the caret on the new line.
+#[gpui::test]
+fn enter_after_an_opener_leaves_the_next_line_alone(cx: &mut TestAppContext) {
+    let state = cx.update(|cx| cx.new(|_| EditorState::editable("    foo {\n}", None)));
+    state.update(cx, |s, cx| {
+        let (range, text) = s.newline_edit(9);
+        s.replace_range(range, &text, cx);
+    });
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.text(), "    foo {\n        \n}");
+        assert_eq!(s.selection().range, 18..18);
+        assert_eq!(s.offset_to_point(18), Point { row: 1, col: 8 });
+    });
 }
 
 // -- offset helpers -----------------------------------------------------------
