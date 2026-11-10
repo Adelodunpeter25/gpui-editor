@@ -259,7 +259,6 @@ impl Render for EditorView {
                                     .as_mut()
                                     .map(|c| (c.0, &c.1, c.2, &mut c.3, &mut c.4))
                                     .unwrap();
-                                let row_len = row_len;
                                 let sub_range = cache.sub_range(buffer_row, sub, row_len);
                                 let sub_len = sub_range.end - sub_range.start;
                                 let render_len = sub_len.min(MAX_ROW_RENDER_CHARS);
@@ -311,9 +310,9 @@ impl Render for EditorView {
                                 // belongs anyway.
                                 let caret_col = caret_offset.and_then(|caret| {
                                     let local = caret.checked_sub(row_start)?;
-                                    let sub_start = sub_range.start as usize;
-                                    let sub_end = sub_range.end as usize;
-                                    let is_last_sub = sub_range.end as usize == row_len;
+                                    let sub_start = sub_range.start;
+                                    let sub_end = sub_range.end;
+                                    let is_last_sub = sub_range.end == row_len;
                                     if local >= sub_start
                                         && (local < sub_end || (local == sub_end && is_last_sub))
                                     {
@@ -328,8 +327,8 @@ impl Render for EditorView {
                                     px(0.)
                                 };
                                 let comment_selected = comment_selections.iter().any(|target| {
-                                    buffer_row + 1 >= target.start_line
-                                        && buffer_row + 1 <= target.end_line
+                                    (target.start_line..=target.end_line)
+                                        .contains(&(buffer_row + 1))
                                 });
                                 let meta = RowMeta {
                                     row: buffer_row,

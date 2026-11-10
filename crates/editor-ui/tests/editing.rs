@@ -6,10 +6,10 @@ use editor_ui::{EditorState, EditorView};
 use gpui::{px, AppContext as _, Entity, TestAppContext, VisualTestContext};
 
 /// Open a focused editor window over `state`.
-fn open<'a>(
-    cx: &'a mut TestAppContext,
+fn open(
+    cx: &mut TestAppContext,
     state: EditorState,
-) -> (Entity<EditorState>, Entity<EditorView>, &'a mut VisualTestContext) {
+) -> (Entity<EditorState>, Entity<EditorView>, &mut VisualTestContext) {
     cx.update(editor_ui::init);
     let state = cx.update(|cx| cx.new(|_| state));
     let view_state = state.clone();

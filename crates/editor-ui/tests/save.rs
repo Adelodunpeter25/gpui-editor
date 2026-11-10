@@ -335,10 +335,10 @@ fn a_failing_save_handler_reports_its_error(cx: &mut TestAppContext) {
 
 // -- key binding --------------------------------------------------------------
 
-fn open_view<'a>(
-    cx: &'a mut TestAppContext,
+fn open_view(
+    cx: &mut TestAppContext,
     state: EditorState,
-) -> (Entity<EditorState>, &'a mut VisualTestContext) {
+) -> (Entity<EditorState>, &mut VisualTestContext) {
     cx.update(editor_ui::init);
     let state = cx.update(|cx| cx.new(|_| state));
     let view_state = state.clone();
