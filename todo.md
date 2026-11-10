@@ -30,17 +30,39 @@ Still open:
 
 ## 2. Edit mode — DONE (except release rev)
 
-Shipped: printable typing, Enter (auto-indent) / Backspace / Delete / Tab,
-a visible caret at the selection head, arrow / Home / End motion with a
-goal column, click-to-place, undo/redo on cmd/ctrl-z (+shift), and
-cut/paste. Consecutive typing coalesces into one undo entry; every key is
-gated on focus + `Mode::Editable`, so readonly tabs behave byte for byte
-as before. The h-scroll/wrap caches key off buffer version, so they
-invalidate per keystroke — covered by tests (`max_line_width` grows on
-edit, shrinks on undo).
+Shipped: text entry through the platform input handler (plain typing,
+dead keys, press-and-hold, emoji picker, IME composition with underlined
+provisional text), Enter (auto-indent from the text before the caret) /
+Backspace / Delete / Tab, a visible caret at the selection head that is
+scrolled back into view after every keyboard edit or motion, arrow / Home
+/ End motion with a goal column, click-to-place, undo/redo on cmd/ctrl-z
+(+shift), cut/paste, and save on cmd/ctrl-s.
 
+Model guarantees, all covered in `tests/`:
+- Every mutation notifies observers, so views repaint without the caller
+  remembering to.
+- Undo entries replay in the order they were made; a typing run ends on
+  caret motion, a structural edit, or 500ms idle; an IME composition is
+  one entry.
+- `set_text` is a document load: history cleared, buffer clean.
+- The buffer holds `\n` only; the file's line ending is restored on save.
+- Dirty state follows content, not edit count: undo back to the saved
+  text is clean.
+- Readonly ignores every edit path (keys, input handler, save).
+
+Still open:
 - Cut a release rev when green (the desktop app consumes the editor by
   pinned rev, not path)
+- Check real IME on macOS by hand in the demo (accent via press-and-hold,
+  a CJK input source, the emoji picker) — the tests drive the handler
+  directly, not the OS
+- Word/line motion and delete (alt/cmd + arrows, backspace), shift-click,
+  double-click word select, PageUp/PageDown
+- Block indent / outdent (Tab / Shift+Tab over a selection)
+- Selection direction for mouse-made selections (shift+arrow after a
+  backwards drag extends the wrong end)
+- Incremental highlight and search instead of whole-buffer per keystroke
+- Notice files changed on disk underneath the editor
 
 ## 3. Vim mode — minimal Normal/Insert
 

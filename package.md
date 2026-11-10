@@ -117,14 +117,21 @@ A system-installed monospace font (e.g. `"Menlo"` on macOS) needs no
 ## 3. Bind the crate's actions once
 
 ```rust
-editor_ui::init(cx); // binds copy/select-all (cmd/ctrl-c, cmd/ctrl-a) and
-                     // undo/redo/cut/paste (cmd/ctrl-z, shift-z, x, v)
+editor_ui::init(cx); // binds copy/select-all (cmd/ctrl-c, cmd/ctrl-a),
+                     // undo/redo/cut/paste (cmd/ctrl-z, shift-z, x, v),
+                     // and save (cmd/ctrl-s)
 ```
 
 Call this once at app startup, same as `cx.bind_keys(...)` for your own
 actions. Without it, those actions exist on `EditorView` but have no keys
-bound to fire them — copy/select-all and the edit-mode clipboard/undo
-combos silently do nothing.
+bound to fire them — copy/select-all, the edit-mode clipboard/undo combos,
+and save silently do nothing.
+
+All bindings are scoped to the `"Editor"` key context, so they only fire
+while an editor is focused and don't collide with your app's own
+`cmd-s`/`cmd-z` elsewhere. To use different keys, skip `init` and bind the
+exported actions (`editor_ui::{Copy, Cut, Paste, Undo, Redo, SelectAll,
+Save}`) yourself.
 
 ## 4. Create state + view
 
@@ -145,9 +152,17 @@ div().size_full().child(view.clone())
 
 Both modes work: `EditorState::readonly` disables undo history (lower RAM);
 `EditorState::editable(...)` additionally wires typing, caret motion,
-Enter/Tab auto-indent, and undo/redo. Keys reach the buffer only while the
-view is focused — call `view.focus(window, cx)` once after opening (or on
-click), or keyboard input silently does nothing.
+Enter/Tab auto-indent, undo/redo, and saving (§8). Keys reach the buffer
+only while the view is focused — clicking into it focuses it, or call
+`view.focus(window, cx)` yourself after opening.
+
+Text entry goes through the platform's text-input system, so dead-key
+accents, press-and-hold variants, the emoji picker, and IME composition
+(Chinese/Japanese/Korean) work; text still being composed is underlined
+and becomes a single undo entry once committed.
+
+Every edit notifies the state's observers, so the view repaints on its own
+and `cx.observe(&state, …)` is all a host needs to react to changes.
 
 ## 5. Select and scroll to a line
 
@@ -224,6 +239,12 @@ state.update(cx, |editor, cx| {
 });
 ```
 
+`set_text` loads a *different document*: it resets the selection, clears
+undo history, and marks the buffer clean. Don't call it to refresh a file
+the user may be editing — it replaces their unsaved changes. Check
+`editor.is_dirty()` first. For an edit that should be undoable, use
+`replace_range`.
+
 Any mutation via `Entity::update` triggers a window redraw on the next
 frame — you don't need to manually notify `EditorView`.
 
@@ -234,7 +255,75 @@ large file doesn't stall the window while it parses (see
 `implementation.md` §6). If your code still has `|editor, _cx|`, rename it
 to `|editor, cx|` and pass `cx` through.
 
-## 8. Optional: theme and word wrap
+## 8. Saving
+
+The editor can save on its own. Bind it to a file and cmd/ctrl-s writes
+the buffer back:
+
+```rust
+// Reads the file and remembers its path:
+let state = cx.new(|_| EditorState::open("src/main.rs", language))?; // io::Result
+
+// …or attach a path to text you loaded yourself:
+let state = cx.new(|_| EditorState::editable(&text, language).with_path(path));
+state.update(cx, |editor, _| editor.set_path(Some(new_path)));
+```
+
+The write is atomic (temp file + rename, so a crash can't truncate the
+file), follows symlinks, keeps the file's permissions, and writes the line
+ending the file was loaded with. `editor.save(cx)` does the same thing
+programmatically and returns `false` if there was nothing to save with.
+
+**Dirty state.** `editor.is_dirty()` is true when the text differs from
+what was last saved or loaded; undoing back to the saved text reads as
+clean again. It changes inside ordinary notifications, so an observer is
+enough to drive a "modified" dot.
+
+**Results.** Subscribe for the outcome:
+
+```rust
+use editor_ui::EditorEvent;
+
+cx.subscribe(&state, |this, _state, event: &EditorEvent, cx| match event {
+    EditorEvent::Saved => { /* clear your error banner */ }
+    EditorEvent::SaveFailed(message) => { /* show it */ }
+})
+.detach();
+```
+
+**Saving somewhere else.** For remote files, a save-as dialog,
+format-on-save, or anything that isn't "write to this local path", install
+a handler; the editor then hands you the text instead of touching disk:
+
+```rust
+use editor_ui::{SaveRequest, SaveStatus};
+
+state.update(cx, |editor, _| {
+    editor.set_save_handler(Some(Box::new(|request: SaveRequest| {
+        // request.text — exact bytes to persist (line ending applied)
+        // request.path — the editor's path, if it has one
+        my_backend.write(&request.text)?;
+        Ok(SaveStatus::Saved)
+    })));
+});
+```
+
+If the write finishes later (async upload, dialog), return
+`SaveStatus::Deferred` and call `editor.mark_saved(request.revision, cx)`
+when it lands — passing the revision means edits made while the save was
+in flight still read as unsaved.
+
+With no path and no handler, or in a readonly editor, the save action is
+not consumed: cmd/ctrl-s falls through to whatever your app binds.
+
+**Line endings.** The buffer always holds `\n`: `editor.text()`, every
+offset, and pasted text are normalized, so a caret can't land inside a
+`\r\n`. The ending the file was loaded with (`editor.line_ending()`) is
+re-applied on save; `editor.set_line_ending(LineEnding::Lf)` converts the
+file on its next save. A file mixing endings is saved with its first one
+throughout.
+
+## 9. Optional: theme and word wrap
 
 ```rust
 state.update(cx, |editor, cx| {
@@ -247,11 +336,22 @@ Syntax colors come from the real `lumis` theme, not a hand-picked palette —
 switching `ThemePreset` changes every scope's actual color, not just a
 handful of named tokens.
 
-## 9. Not yet available (don't build against these expecting them to exist)
+## 10. Not yet available (don't build against these expecting them to exist)
 
 - Edit mode is plain-text only: no search overlay, no bracket-match
   rendering (the model methods exist on `EditorState`, nothing calls them
   from `EditorView` yet).
+- Editing covers the basics only. Not there yet: word/line motion and
+  delete (alt/cmd + arrows or backspace move and delete one character),
+  shift-click, double-click word select, PageUp/PageDown, and block
+  indent (Tab over a selection replaces it; Shift+Tab is not outdent).
+- One caret, one selection — no multi-cursor.
+- Files are read and written as UTF-8 only; `EditorState::open` errors on
+  anything else rather than guessing an encoding.
+- Nothing watches the file on disk: a change made outside the editor is
+  not noticed, and the next save overwrites it.
+- Highlighting re-parses the whole buffer per edit. Above ~64KB that
+  happens off-thread, so colors can lag a keystroke behind the text.
 - The diff view stays readonly — `DiffState`/`DiffView`
   (`editor_ui::{DiffState, DiffView}`) highlight each
   line independently, not the full old/new text once — a multi-line
