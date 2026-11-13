@@ -20,11 +20,12 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use syntax::{Language, ThemePreset};
 
-use crate::types::FontConfig;
+use crate::types::{diff_comment_target, diff_line_number, DiffCommentTarget, DiffSide, FontConfig};
 use crate::wrap::{clip_to_subrange, WrapCache};
 use crate::{color_for, measure_char_width, render_h_scrollbar, render_scrollbar};
 use crate::{render_spans, round_wrap_width, scrollbar_thumb_size, text_display_width};
@@ -168,6 +169,115 @@ pub struct DiffView {
     h_thumb_dragging: Rc<Cell<Option<(Pixels, Pixels)>>>,
     /// Cached widest-line text width: `(diff version, font, max px)`.
     content_width_cache: Rc<RefCell<Option<(u64, FontConfig, Pixels)>>>,
+    /// Opt-in comment gutter: set via `on_comment_target`.
+    comment_handler: Option<Rc<dyn Fn(DiffCommentTarget)>>,
+    comment_selections: Vec<DiffCommentTarget>,
+    comment_hover_row: Rc<Cell<Option<usize>>>,
+    /// `(side, starting row index)` while a gutter drag is in progress.
+    comment_drag: Rc<Cell<Option<(DiffSide, usize)>>>,
+    overlays: Vec<DiffRowOverlay>,
+    overlay_gen: u64,
+    overlay_layout: Rc<RefCell<Option<(OverlayKey, Rc<OverlayLayout>)>>>,
+}
+
+type OverlayKey = (u64, u64, Option<Pixels>, FontConfig);
+
+/// A host-supplied element shown under a diff row (e.g. an inline comment
+/// card). Anchored below the row carrying `line` on `side`; it occupies
+/// `rows` extra line-heights, so rows below shift down and the list stays
+/// uniform-height (virtualization math is unchanged).
+#[derive(Clone)]
+pub struct DiffRowOverlay {
+    pub side: DiffSide,
+    pub line: u32,
+    /// Height in line-heights (min 1). The element is clipped to it.
+    pub rows: u32,
+    pub builder: Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>,
+}
+
+impl DiffRowOverlay {
+    pub fn new(
+        side: DiffSide,
+        line: u32,
+        rows: u32,
+        builder: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
+    ) -> Self {
+        Self {
+            side,
+            line,
+            rows,
+            builder: Rc::new(builder),
+        }
+    }
+}
+
+struct OverlayInsert {
+    /// List index of the first filler row.
+    start: usize,
+    rows: usize,
+    overlay: usize,
+    /// Filler rows inserted before this one.
+    before: usize,
+}
+
+#[derive(Default)]
+struct OverlayLayout {
+    inserts: Vec<OverlayInsert>,
+    total_rows: usize,
+}
+
+enum ListItem {
+    /// Visual row index.
+    Line(usize),
+    Filler { overlay: usize, slice: usize },
+}
+
+impl OverlayLayout {
+    fn resolve(&self, ix: usize) -> ListItem {
+        let p = self.inserts.partition_point(|i| i.start <= ix);
+        if p == 0 {
+            return ListItem::Line(ix);
+        }
+        let i = &self.inserts[p - 1];
+        if ix < i.start + i.rows {
+            ListItem::Filler {
+                overlay: i.overlay,
+                slice: ix - i.start,
+            }
+        } else {
+            ListItem::Line(ix - i.before - i.rows)
+        }
+    }
+}
+
+impl DiffView {
+    /// Opt in to the comment gutter: hover `+`, click or drag rows in the
+    /// gutter, and receive the picked range.
+    pub fn on_comment_target(&mut self, handler: impl Fn(DiffCommentTarget) + 'static) {
+        self.comment_handler = Some(Rc::new(handler));
+    }
+
+    /// Opt back out (removes the callback, the `+` and gutter hit-testing).
+    pub fn clear_comment_target_handler(&mut self) {
+        self.comment_handler = None;
+    }
+
+    /// Ranges that currently have a comment/draft; their rows are tinted.
+    pub fn set_comment_selections(
+        &mut self,
+        selections: Vec<DiffCommentTarget>,
+        cx: &mut Context<Self>,
+    ) {
+        self.comment_selections = selections;
+        cx.notify();
+    }
+
+    /// Replace the row overlays (see `DiffRowOverlay`).
+    pub fn set_row_overlays(&mut self, overlays: Vec<DiffRowOverlay>, cx: &mut Context<Self>) {
+        self.overlays = overlays;
+        self.overlay_gen = self.overlay_gen.wrapping_add(1);
+        cx.notify();
+    }
 }
 
 impl DiffView {
@@ -182,6 +292,13 @@ impl DiffView {
             char_width: Rc::new(RefCell::new(None)),
             h_thumb_dragging: Rc::new(Cell::new(None)),
             content_width_cache: Rc::new(RefCell::new(None)),
+            comment_handler: None,
+            comment_selections: Vec::new(),
+            comment_hover_row: Rc::new(Cell::new(None)),
+            comment_drag: Rc::new(Cell::new(None)),
+            overlays: Vec::new(),
+            overlay_gen: 0,
+            overlay_layout: Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -210,6 +327,21 @@ struct DiffRowMeta {
     /// explanation), so the row states its content width explicitly and
     /// keeps the layout it had when the list was content-width.
     row_width: Option<Pixels>,
+    comment: RowComment,
+}
+
+/// Per-row comment-gutter state (all-default = feature off).
+#[derive(Default)]
+struct RowComment {
+    row: usize,
+    /// Handler set: row tracks hover and gutter takes mouse-down.
+    enabled: bool,
+    /// Inside a persisted selection or the in-progress drag.
+    lit: bool,
+    /// Show the `+` chip (sub-row 0 under the pointer).
+    plus: bool,
+    hover: Option<Rc<Cell<Option<usize>>>>,
+    drag: Option<Rc<Cell<Option<(DiffSide, usize)>>>>,
 }
 
 fn render_diff_line(
@@ -227,6 +359,7 @@ fn render_diff_line(
         gutter_block_w,
         content_ml,
         row_width,
+        comment,
     } = meta;
     // No `+`/`-` glyphs — a colored left-edge bar marks a changed row
     // instead (matches how GitHub/most PR diff views do it), so `marker`
@@ -237,6 +370,7 @@ fn render_diff_line(
         diff::DiffLineKind::Context => (None, None),
     };
 
+    let line_kind = line.kind;
     let full_chars: Vec<char> = line.text.chars().collect();
     let row_len = full_chars.len();
     let sub_start = sub_range.start.min(row_len);
@@ -287,6 +421,32 @@ fn render_diff_line(
     if let Some(bg) = bg {
         row = row.bg(bg);
     }
+    if comment.lit {
+        row = row.bg(rgba(0xfacc1538));
+    }
+    if comment.enabled {
+        let hover = comment.hover.clone().expect("hover handle when enabled");
+        let row_ix = comment.row;
+        row = row
+            .on_mouse_move({
+                let hover = hover.clone();
+                move |_e, window, _cx| {
+                    if hover.get() != Some(row_ix) {
+                        hover.set(Some(row_ix));
+                        window.refresh();
+                    }
+                }
+            })
+            .on_mouse_exit({
+                let drag = comment.drag.clone().expect("drag handle when enabled");
+                move |_e, window, _cx| {
+                    if drag.get().is_none() {
+                        hover.set(None);
+                        window.refresh();
+                    }
+                }
+            });
+    }
 
     let old_label = if sub == 0 {
         gutter_number(line.old_line)
@@ -319,9 +479,42 @@ fn render_diff_line(
             .top_0()
             .w(gutter_block_w)
             .h_full()
-            .bg(Hsla::black())
+            .bg(if comment.lit {
+                rgb(0x3a3418).into()
+            } else {
+                Hsla::black()
+            })
             .flex()
             .flex_row()
+            .when(comment.plus, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(2.0))
+                        .top_0()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .text_color(rgb(0xcdd6f4))
+                        .text_size(px(16.0))
+                        .child("+"),
+                )
+            })
+            .when(comment.enabled, |el| {
+                let hover = comment.hover.clone().expect("hover handle when enabled");
+                let drag = comment.drag.clone().expect("drag handle when enabled");
+                let row_ix = comment.row;
+                let side = if line_kind == diff::DiffLineKind::Removed {
+                    DiffSide::Old
+                } else {
+                    DiffSide::New
+                };
+                el.on_mouse_down(MouseButton::Left, move |_e, window, _cx| {
+                    hover.set(Some(row_ix));
+                    drag.set(Some((side, row_ix)));
+                    window.refresh();
+                })
+            })
             .child(
                 div()
                     .w_10()
@@ -340,6 +533,17 @@ fn render_diff_line(
                     .child(new_label),
             ),
     )
+}
+
+/// True when a row falls inside a persisted selection or the live drag.
+fn row_is_lit(
+    line: &diff::DiffLine,
+    selections: &[DiffCommentTarget],
+    drag: Option<DiffCommentTarget>,
+) -> bool {
+    selections.iter().chain(drag.as_ref()).any(|t| {
+        diff_line_number(line, t.side).is_some_and(|n| n >= t.start_line && n <= t.end_line)
+    })
 }
 
 impl Render for DiffView {
@@ -381,8 +585,67 @@ impl Render for DiffView {
                 window,
             );
         }
-        let visual_rows = wrap_cache.visual_row_count();
+        let line_visual_rows = wrap_cache.visual_row_count();
+        let overlay_layout: Rc<OverlayLayout> = if self.overlays.is_empty() {
+            Rc::new(OverlayLayout {
+                inserts: Vec::new(),
+                total_rows: line_visual_rows,
+            })
+        } else {
+            let key: OverlayKey = (diff_version, self.overlay_gen, wrap_width, font.clone());
+            let cached = self.overlay_layout.borrow().clone();
+            match cached {
+                Some((k, layout)) if k == key => layout,
+                _ => {
+                    let lines = &state_snapshot.result.lines;
+                    let mut anchors: Vec<(usize, usize)> = Vec::new(); // (last visual row, overlay)
+                    for (oi, o) in self.overlays.iter().enumerate() {
+                        let Some(row) = lines
+                            .iter()
+                            .position(|l| diff_line_number(l, o.side) == Some(o.line))
+                        else {
+                            continue;
+                        };
+                        let last = wrap_cache
+                            .first_visual_row(row as u32 + 1)
+                            .map(|v| v - 1)
+                            .unwrap_or(line_visual_rows.saturating_sub(1));
+                        anchors.push((last, oi));
+                    }
+                    anchors.sort();
+                    let mut before = 0;
+                    let mut inserts = Vec::new();
+                    for (last, oi) in anchors {
+                        let rows = self.overlays[oi].rows.max(1) as usize;
+                        inserts.push(OverlayInsert {
+                            start: last + 1 + before,
+                            rows,
+                            overlay: oi,
+                            before,
+                        });
+                        before += rows;
+                    }
+                    let layout = Rc::new(OverlayLayout {
+                        inserts,
+                        total_rows: line_visual_rows + before,
+                    });
+                    *self.overlay_layout.borrow_mut() = Some((key, layout.clone()));
+                    layout
+                }
+            }
+        };
+        let visual_rows = overlay_layout.total_rows;
         drop(wrap_cache);
+
+        let comment_enabled = self.comment_handler.is_some();
+        let comment_selections = self.comment_selections.clone();
+        let comment_hover = self.comment_hover_row.clone();
+        let comment_drag = self.comment_drag.clone();
+        let drag_target = comment_drag.get().and_then(|(_, start)| {
+            let end = comment_hover.get().unwrap_or(start);
+            diff_comment_target(&state_snapshot.result.lines, start, end)
+        });
+        let overlay_items: Rc<Vec<DiffRowOverlay>> = Rc::new(self.overlays.clone());
 
         // Same cached widest-line scan as `EditorView`: O(total chars) per
         // diff version, never per frame — and, same as `EditorView`, only
@@ -452,6 +715,37 @@ impl Render for DiffView {
                     "gpui-diff-lines",
                     visual_rows,
                     cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        let line_height = this.state.read(cx).font().line_height;
+                        // Overlay builders need `&mut App`, so build them
+                        // before `state` borrows `cx`.
+                        let mut fillers: HashMap<usize, AnyElement> = HashMap::new();
+                        for ix in range.clone() {
+                            if let ListItem::Filler { overlay, slice } = overlay_layout.resolve(ix) {
+                                let o = &overlay_items[overlay];
+                                let lh = line_height;
+                                // Every filler row paints the card shifted up by its
+                                // slice and clipped to its own row, so the card spans
+                                // `rows` uniform rows seamlessly.
+                                let card = div()
+                                    .absolute()
+                                    .top(-(lh * slice as f32))
+                                    .left(content_ml)
+                                    .right(px(8.))
+                                    .h(lh * o.rows.max(1) as f32)
+                                    .child((o.builder)(_window, cx));
+                                let filler = div()
+                                    .relative()
+                                    .overflow_hidden()
+                                    .h(lh)
+                                    .border_l_4()
+                                    .border_color(transparent_black());
+                                let filler = match content_width {
+                                    Some(w) => filler.w(w),
+                                    None => filler.w_full(),
+                                };
+                                fillers.insert(ix, filler.child(card).into_any_element());
+                            }
+                        }
                         let state = this.state.read(cx);
                         let language = state.language();
                         let theme = state.theme();
@@ -459,6 +753,12 @@ impl Render for DiffView {
                         let cache = wrap_cache_handle.borrow();
                         range
                             .map(|ix| {
+                                let ix = match overlay_layout.resolve(ix) {
+                                    ListItem::Line(v) => v,
+                                    ListItem::Filler { .. } => {
+                                        return fillers.remove(&ix).expect("prebuilt filler");
+                                    }
+                                };
                                 let (row, sub) = cache.resolve(ix);
                                 let line = &state.result.lines[row as usize];
                                 let sub_range =
@@ -481,8 +781,27 @@ impl Render for DiffView {
                                         gutter_block_w,
                                         content_ml,
                                         row_width: content_width,
+                                        comment: RowComment {
+                                            row: row as usize,
+                                            enabled: comment_enabled,
+                                            lit: true
+                                                && row_is_lit(
+                                                    line,
+                                                    &comment_selections,
+                                                    drag_target,
+                                                ),
+                                            plus: comment_enabled
+                                                && sub == 0
+                                                && (comment_hover.get() == Some(row as usize)
+                                                    || comment_drag
+                                                        .get()
+                                                        .is_some_and(|(_, s)| s == row as usize)),
+                                            hover: comment_enabled.then(|| comment_hover.clone()),
+                                            drag: comment_enabled.then(|| comment_drag.clone()),
+                                        },
                                     },
                                 )
+                                .into_any_element()
                             })
                             .collect()
                     }),
@@ -557,9 +876,22 @@ impl Render for DiffView {
             .on_mouse_up(MouseButton::Left, {
                 let thumb_dragging = self.thumb_dragging.clone();
                 let h_thumb_dragging = self.h_thumb_dragging.clone();
-                move |_event, _window, _cx| {
+                let state = self.state.clone();
+                let handler = self.comment_handler.clone();
+                let comment_drag = self.comment_drag.clone();
+                let comment_hover = self.comment_hover_row.clone();
+                move |_event, window, cx| {
                     thumb_dragging.set(None);
                     h_thumb_dragging.set(None);
+                    if let Some((_, start)) = comment_drag.take() {
+                        let end = comment_hover.get().unwrap_or(start);
+                        let target =
+                            diff_comment_target(&state.read(cx).result.lines, start, end);
+                        if let (Some(target), Some(handler)) = (target, &handler) {
+                            handler(target);
+                        }
+                        window.refresh();
+                    }
                 }
             })
     }

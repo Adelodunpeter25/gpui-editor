@@ -26,13 +26,14 @@ mod wrap;
 
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use edit_buffer::LineEnding;
-pub use diff_view::{DiffState, DiffView};
+pub use diff_view::{DiffRowOverlay, DiffState, DiffView};
 pub use input::{init, CancelComment, Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 pub use save::{EditorEvent, SaveHandler, SaveRequest, SaveStatus};
 pub use scrollbar::scrollbar_thumb_size;
 pub use state::EditorState;
 pub use types::{
-    comment_target_from, gutter_hit_test, CommentTarget, FontConfig, IndentOptions, Mode,
+    comment_target_from, diff_comment_target, diff_line_number, gutter_hit_test, CommentTarget,
+    DiffCommentTarget, DiffSide, FontConfig, IndentOptions, Mode,
     SearchState, Selection,
 };
 pub use view::{CommentAnchor, EditorView};

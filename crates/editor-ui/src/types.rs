@@ -29,6 +29,61 @@ pub fn comment_target_from(anchor: Point, current: Point, line_count: u32) -> Co
     }
 }
 
+/// Which side of a diff a line number refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
+/// A 1-based inclusive line range on one side of a diff, picked from the
+/// `DiffView` comment gutter. Also the shape of a persisted selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffCommentTarget {
+    pub side: DiffSide,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+/// The line number a diff row carries on `side`, if any.
+pub fn diff_line_number(line: &diff::DiffLine, side: DiffSide) -> Option<u32> {
+    match side {
+        DiffSide::Old => line.old_line,
+        DiffSide::New => line.new_line,
+    }
+}
+
+/// Comment target for a gutter drag from row index `start` to row index
+/// `end` (either order). The side comes from the starting row (Removed ->
+/// Old, otherwise New); only rows with a number on that side count.
+pub fn diff_comment_target(
+    lines: &[diff::DiffLine],
+    start: usize,
+    end: usize,
+) -> Option<DiffCommentTarget> {
+    let first = lines.get(start)?;
+    let side = if first.kind == diff::DiffLineKind::Removed {
+        DiffSide::Old
+    } else {
+        DiffSide::New
+    };
+    diff_line_number(first, side)?;
+    let (lo, hi) = (start.min(end), start.max(end).min(lines.len() - 1));
+    let nums = lines[lo..=hi]
+        .iter()
+        .filter_map(|l| diff_line_number(l, side));
+    let (mut min, mut max) = (u32::MAX, 0);
+    for n in nums {
+        min = min.min(n);
+        max = max.max(n);
+    }
+    Some(DiffCommentTarget {
+        side,
+        start_line: min,
+        end_line: max,
+    })
+}
+
 /// True when a pointer x coordinate is inside the existing gutter.
 pub fn gutter_hit_test(x: f32, gutter_left: f32, gutter_width: f32) -> bool {
     x >= gutter_left && x < gutter_left + gutter_width
