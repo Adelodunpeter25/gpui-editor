@@ -136,7 +136,7 @@ impl WrapCache {
                     let rest = &text[indent_byte_len..];
                     let fragments = [LineFragment::text(rest)];
                     let breaks: Vec<usize> = wrapper
-                        .wrap_line(&fragments, content_width)
+                        .wrap_line(&fragments, content_width, gpui::IndentAdjustment::NoIndent)
                         .map(|boundary| {
                             let ix = boundary.ix.min(rest.len());
                             indent_chars as usize + rest[..ix].chars().count()

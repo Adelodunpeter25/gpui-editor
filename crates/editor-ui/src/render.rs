@@ -132,6 +132,7 @@ impl Render for EditorView {
         let editable = !self.state.read(cx).is_readonly();
         let input_focus = self.focus_handle.clone();
         let input_view = cx.entity();
+        let view = input_view.clone();
         let wrap_cache = self.wrap_cache.clone();
         let row_font = font.clone();
         let interaction = RowInteraction {
@@ -200,10 +201,15 @@ impl Render for EditorView {
             // drives word-wrap's wrap point.
             .child(
                 canvas(
-                    move |bounds, _window, _cx| {
+                    move |bounds, _window, cx| {
+                        let changed = viewport_height.get() != bounds.size.height
+                            || viewport_width.get() != bounds.size.width;
                         viewport_height.set(bounds.size.height);
                         viewport_width.set(bounds.size.width);
                         viewport_origin.set(bounds.origin);
+                        if changed {
+                            view.update(cx, |_, cx| cx.notify());
+                        }
                     },
                     // Paint is the only phase an input handler can be
                     // registered in. It makes the focused, editable editor

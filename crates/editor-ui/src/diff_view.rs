@@ -692,6 +692,7 @@ impl Render for DiffView {
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
         let wrap_cache_handle = self.wrap_cache.clone();
+        let view = cx.entity();
 
         div()
             .id("gpui-diff-view")
@@ -701,9 +702,14 @@ impl Render for DiffView {
             .text_color(Hsla::white())
             .child(
                 canvas(
-                    move |bounds, _window, _cx| {
+                    move |bounds, _window, cx| {
+                        let changed = viewport_height.get() != bounds.size.height
+                            || viewport_width.get() != bounds.size.width;
                         viewport_height.set(bounds.size.height);
                         viewport_width.set(bounds.size.width);
+                        if changed {
+                            view.update(cx, |_, cx| cx.notify());
+                        }
                     },
                     |_, _, _, _| {},
                 )
