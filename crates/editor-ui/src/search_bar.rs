@@ -380,20 +380,20 @@ impl Render for SearchBar {
             .id("editor-search-bar")
             .absolute()
             .top_2()
-            .right_4()
+            .right_6()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1p5()
-            .px_2p5()
-            .py_1p5()
+            .gap_1()
+            .px_1p5()
+            .py_1()
             .rounded_md()
-            .bg(rgb(0x1e1e2e))
+            .bg(rgb(0x141416))
             .border_1()
-            .border_color(rgb(0x45475a))
+            .border_color(rgba(0xffffff1f))
             .shadow_md()
             .text_xs()
-            .text_color(rgb(0xcdd6f4))
+            .text_color(rgb(0xe4e4e7))
             .track_focus(&self.focus_handle)
             .key_context("EditorSearch")
             .on_action(cx.listener(Self::find_next))
@@ -413,21 +413,22 @@ impl Render for SearchBar {
                 div()
                     .id("search-input-box")
                     .relative()
-                    .w(px(180.0))
+                    .w(px(240.0))
                     .h(px(24.0))
                     .px_2()
                     .rounded_sm()
-                    .bg(rgb(0x11111b))
+                    .bg(rgb(0x0c0c0e))
                     .border_1()
                     .border_color(if focused {
-                        rgb(0x89b4fa)
+                        rgba(0xffffff40)
                     } else {
-                        rgb(0x313244)
+                        rgba(0xffffff14)
                     })
                     .flex()
                     .flex_row()
                     .items_center()
-                    .overflow_x_hidden()
+                    .justify_between()
+                    .gap_1p5()
                     .child(
                         canvas(
                             |_, _, _| {},
@@ -442,55 +443,67 @@ impl Render for SearchBar {
                         .absolute()
                         .size_full(),
                     )
-                    .when(self.query.is_empty(), |el| {
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .overflow_x_hidden()
+                            .when(self.query.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .text_color(rgb(0x71717a))
+                                        .child("Find in file…"),
+                                )
+                            })
+                            .when(!self.query.is_empty(), |el| {
+                                el.child(before_sel)
+                                    .when(!sel.is_empty(), |el| {
+                                        el.child(div().bg(rgba(0x3b82f680)).child(in_sel))
+                                    })
+                                    .when(sel.is_empty() && focused, |el| {
+                                        el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
+                                    })
+                                    .child(after_sel)
+                            }),
+                    )
+                    .when(!count_label.is_empty(), |el| {
                         el.child(
                             div()
-                                .text_color(rgb(0x6c7086))
-                                .child("Find in file…"),
+                                .flex_shrink_0()
+                                .whitespace_nowrap()
+                                .text_color(if search.matches.is_empty() {
+                                    rgb(0xf87171)
+                                } else {
+                                    rgb(0x71717a)
+                                })
+                                .child(count_label),
                         )
-                    })
-                    .when(!self.query.is_empty(), |el| {
-                        el.child(before_sel)
-                            .when(!sel.is_empty(), |el| {
-                                el.child(div().bg(rgba(0x3b82f680)).child(in_sel))
-                            })
-                            .when(sel.is_empty() && focused, |el| {
-                                el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xcdd6f4)))
-                            })
-                            .child(after_sel)
                     }),
             )
-            .child(
-                div()
-                    .w(px(76.0))
-                    .px_1()
-                    .flex()
-                    .justify_end()
-                    .overflow_x_hidden()
-                    .whitespace_nowrap()
-                    .text_color(if !self.query.is_empty() && search.matches.is_empty() {
-                        rgb(0xf38ba8)
-                    } else {
-                        rgb(0xa6adc8)
-                    })
-                    .child(count_label),
-            )
+            .child(div().w(px(1.0)).h(px(16.0)).bg(rgba(0xffffff1a)))
             .child(
                 div()
                     .id("search-case-toggle")
-                    .px_1p5()
-                    .py_0p5()
+                    .w(px(24.0))
+                    .h(px(24.0))
                     .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
                     .bg(if case_sensitive {
-                        rgb(0x89b4fa)
+                        rgba(0xffffff24)
                     } else {
-                        rgb(0x313244)
+                        rgba(0x00000000)
                     })
+                    .hover(|s| s.bg(rgba(0xffffff14)))
                     .text_color(if case_sensitive {
-                        rgb(0x1e1e2e)
+                        rgb(0xffffff)
                     } else {
-                        rgb(0xcdd6f4)
+                        rgb(0xa1a1aa)
                     })
                     .child("Aa")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -500,12 +513,15 @@ impl Render for SearchBar {
             .child(
                 div()
                     .id("search-prev")
-                    .px_1p5()
-                    .py_0p5()
+                    .w(px(24.0))
+                    .h(px(24.0))
                     .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
-                    .bg(rgb(0x313244))
-                    .hover(|s| s.bg(rgb(0x45475a)))
+                    .text_color(rgb(0xa1a1aa))
+                    .hover(|s| s.bg(rgba(0xffffff14)).text_color(rgb(0xffffff)))
                     .child("↑")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.find_prev(&FindPrevious, window, cx);
@@ -514,12 +530,15 @@ impl Render for SearchBar {
             .child(
                 div()
                     .id("search-next")
-                    .px_1p5()
-                    .py_0p5()
+                    .w(px(24.0))
+                    .h(px(24.0))
                     .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
-                    .bg(rgb(0x313244))
-                    .hover(|s| s.bg(rgb(0x45475a)))
+                    .text_color(rgb(0xa1a1aa))
+                    .hover(|s| s.bg(rgba(0xffffff14)).text_color(rgb(0xffffff)))
                     .child("↓")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.find_next(&FindNext, window, cx);
@@ -528,12 +547,15 @@ impl Render for SearchBar {
             .child(
                 div()
                     .id("search-close")
-                    .px_1p5()
-                    .py_0p5()
+                    .w(px(24.0))
+                    .h(px(24.0))
                     .rounded_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .cursor_pointer()
-                    .bg(rgb(0x313244))
-                    .hover(|s| s.bg(rgb(0x45475a)))
+                    .text_color(rgb(0xa1a1aa))
+                    .hover(|s| s.bg(rgba(0xffffff14)).text_color(rgb(0xffffff)))
                     .child("×")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.close(&CloseSearch, window, cx);
