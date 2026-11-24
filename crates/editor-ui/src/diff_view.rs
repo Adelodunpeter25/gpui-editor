@@ -466,7 +466,7 @@ fn render_diff_line(
             .flex_shrink_0()
             .ml(content_ml)
             .pl(indent_px)
-            .child(render_spans(sub_text, runs, None)),
+            .child(render_spans(sub_text, runs, None, &[])),
     )
     // Gutter block (both number columns): plain row content, same as
     // `EditorView`'s gutter — it rides the row's horizontal translation

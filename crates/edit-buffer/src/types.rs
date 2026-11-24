@@ -390,33 +390,129 @@ impl Buffer {
     }
 
     /// Literal search over rope chars. Returns char-offset ranges, capped at `limit`.
-    /// Case-insensitive folds via `char::to_lowercase` (no regex, no alloc per line).
     pub fn search(&self, needle: &str, case_sensitive: bool, limit: usize) -> Vec<Range<usize>> {
         if needle.is_empty() || limit == 0 {
             return Vec::new();
         }
-        // Materialize once — M3 will replace with chunked memchr scan for >1MB.
-        // M0 files are small demo texts; single String keeps CPU low vs per-line allocs.
         let hay = self.rope.to_string();
-        if case_sensitive {
-            hay.match_indices(needle)
+        search_str(&hay, needle, case_sensitive, limit)
+    }
+}
+
+/// Linear-time literal search over `hay`, returning char-offset ranges capped at `limit`.
+/// Uses an ASCII fast path (zero extra allocations, O(1) byte-to-char offsets) and an
+/// advancing byte-to-char cursor for UTF-8 text.
+pub fn search_str(hay: &str, needle: &str, case_sensitive: bool, limit: usize) -> Vec<Range<usize>> {
+    if needle.is_empty() || limit == 0 || hay.is_empty() {
+        return Vec::new();
+    }
+
+    if case_sensitive {
+        let needle_chars = needle.chars().count();
+        if hay.is_ascii() {
+            if !needle.is_ascii() {
+                return Vec::new();
+            }
+            return hay
+                .match_indices(needle)
                 .take(limit)
-                .map(|(byte_ix, _)| {
-                    let start = hay[..byte_ix].chars().count();
-                    start..start + needle.chars().count()
-                })
-                .collect()
-        } else {
-            let hay_l = hay.to_lowercase();
-            let needle_l = needle.to_lowercase();
-            hay_l
-                .match_indices(&needle_l)
-                .take(limit)
-                .map(|(byte_ix, _)| {
-                    let start = hay_l[..byte_ix].chars().count();
-                    start..start + needle_l.chars().count()
-                })
-                .collect()
+                .map(|(b, _)| b..b + needle_chars)
+                .collect();
+        }
+        let mut out = Vec::new();
+        let mut last_byte = 0usize;
+        let mut last_char = 0usize;
+        for (byte_ix, _) in hay.match_indices(needle).take(limit) {
+            last_char += hay[last_byte..byte_ix].chars().count();
+            last_byte = byte_ix;
+            out.push(last_char..last_char + needle_chars);
+        }
+        return out;
+    }
+
+    // Case-insensitive ASCII needle fast path: ASCII bytes never appear inside
+    // multi-byte UTF-8 sequences, so byte-level matching is exact on any UTF-8 haystack.
+    if needle.is_ascii() {
+        let hay_bytes = hay.as_bytes();
+        let needle_bytes = needle.as_bytes();
+        let nlen = needle_bytes.len();
+        if hay_bytes.len() < nlen {
+            return Vec::new();
+        }
+        let b0_lower = needle_bytes[0].to_ascii_lowercase();
+        let b0_upper = needle_bytes[0].to_ascii_uppercase();
+        let hay_is_ascii = hay.is_ascii();
+
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        let end = hay_bytes.len() - nlen;
+        let mut last_byte = 0usize;
+        let mut last_char = 0usize;
+
+        while i <= end {
+            let b = hay_bytes[i];
+            if (b == b0_lower || b == b0_upper)
+                && hay_bytes[i..i + nlen].eq_ignore_ascii_case(needle_bytes)
+            {
+                let start_char = if hay_is_ascii {
+                    i
+                } else {
+                    last_char += hay[last_byte..i].chars().count();
+                    last_byte = i;
+                    last_char
+                };
+                out.push(start_char..start_char + nlen);
+                if out.len() >= limit {
+                    break;
+                }
+                i += nlen;
+            } else {
+                i += 1;
+            }
+        }
+        return out;
+    }
+
+    // Unicode case-insensitive fallback: fold each haystack char and track its
+    // original char index so offsets remain exact even when case folding expands chars.
+    let needle_lower: Vec<char> = needle.chars().flat_map(|c| c.to_lowercase()).collect();
+    if needle_lower.is_empty() {
+        return Vec::new();
+    }
+    let mut folded: Vec<(char, usize)> = Vec::with_capacity(hay.len());
+    for (char_ix, ch) in hay.chars().enumerate() {
+        for lc in ch.to_lowercase() {
+            folded.push((lc, char_ix));
         }
     }
+    let nlen = needle_lower.len();
+    if folded.len() < nlen {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + nlen <= folded.len() {
+        let matched = folded[i..i + nlen]
+            .iter()
+            .zip(needle_lower.iter())
+            .all(|((hc, _), nc)| hc == nc);
+        if matched {
+            let start_char = folded[i].1;
+            let end_char = if i + nlen < folded.len() {
+                folded[i + nlen].1
+            } else {
+                hay.chars().count()
+            };
+            if start_char < end_char {
+                out.push(start_char..end_char);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            i += nlen;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }

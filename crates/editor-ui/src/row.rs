@@ -52,6 +52,9 @@ pub(crate) fn color_for(capture: Capture) -> Hsla {
 
 /// Selection wash color: translucent blue behind selected glyphs.
 const SELECTION_BG: u32 = 0x3b82f680;
+/// Search match highlight: subtle yellow for all matches, warm amber for current.
+const SEARCH_MATCH_BG: u32 = 0xfacc1538;
+const SEARCH_CURRENT_BG: u32 = 0xf59e0b88;
 
 /// Bundles a rendered row's positional bookkeeping (as opposed to its
 /// content/styling) into one value — keeps `render_line`'s own argument
@@ -106,6 +109,7 @@ pub(crate) fn render_line(
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
+    search_matches: Vec<(Range<usize>, bool)>,
     font: FontConfig,
     interaction: RowInteraction,
 ) -> impl IntoElement {
@@ -233,7 +237,7 @@ pub(crate) fn render_line(
                 .flex_shrink_0()
                 .ml(content_x)
                 .pl(indent_px)
-                .child(render_spans(text, runs, selection))
+                .child(render_spans(text, runs, selection, &search_matches))
                 .children(marked_el)
                 .children(caret_el)
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
@@ -341,6 +345,7 @@ pub(crate) fn render_spans(
     text: String,
     runs: Vec<(Range<usize>, Hsla)>,
     selection: Option<Range<usize>>,
+    search_matches: &[(Range<usize>, bool)],
 ) -> impl IntoElement {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
@@ -359,6 +364,10 @@ pub(crate) fn render_spans(
         breaks.push(sel.start.min(len));
         breaks.push(sel.end.min(len));
     }
+    for (m, _) in search_matches {
+        breaks.push(m.start.min(len));
+        breaks.push(m.end.min(len));
+    }
     breaks.sort_unstable();
     breaks.dedup();
 
@@ -376,10 +385,22 @@ pub(crate) fn render_spans(
         let selected = selection
             .as_ref()
             .is_some_and(|sel| sel.start <= lo && hi <= sel.end);
+        let mut match_bg: Option<u32> = None;
+        for (m, is_current) in search_matches {
+            if m.start <= lo && hi <= m.end {
+                match_bg = Some(if *is_current {
+                    SEARCH_CURRENT_BG
+                } else {
+                    match_bg.unwrap_or(SEARCH_MATCH_BG)
+                });
+            }
+        }
         let word: String = chars[lo..hi].iter().collect();
         let mut el = div().text_color(color);
         if selected {
             el = el.bg(rgba(SELECTION_BG));
+        } else if let Some(bg) = match_bg {
+            el = el.bg(rgba(bg));
         }
         children.push(el.child(word).into_any_element());
     }

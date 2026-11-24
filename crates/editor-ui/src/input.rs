@@ -11,7 +11,21 @@ use crate::view::EditorView;
 
 actions!(
     editor_ui,
-    [Copy, SelectAll, CancelComment, Undo, Redo, Cut, Paste, Save]
+    [
+        Copy,
+        SelectAll,
+        CancelComment,
+        Undo,
+        Redo,
+        Cut,
+        Paste,
+        Save,
+        Find,
+        FindNext,
+        FindPrevious,
+        CloseSearch,
+        ToggleCaseSensitive
+    ]
 );
 
 /// Bind default keys for `editor_ui`'s actions. Call once at app startup.
@@ -31,6 +45,24 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-v", Paste, Some("Editor")),
         KeyBinding::new("cmd-s", Save, Some("Editor")),
         KeyBinding::new("ctrl-s", Save, Some("Editor")),
+        KeyBinding::new("cmd-f", Find, Some("Editor")),
+        KeyBinding::new("ctrl-f", Find, Some("Editor")),
+        KeyBinding::new("cmd-g", FindNext, Some("Editor")),
+        KeyBinding::new("shift-cmd-g", FindPrevious, Some("Editor")),
+        KeyBinding::new("f3", FindNext, Some("Editor")),
+        KeyBinding::new("shift-f3", FindPrevious, Some("Editor")),
+        KeyBinding::new("enter", FindNext, Some("EditorSearch")),
+        KeyBinding::new("shift-enter", FindPrevious, Some("EditorSearch")),
+        KeyBinding::new("escape", CloseSearch, Some("EditorSearch")),
+        KeyBinding::new("cmd-f", Find, Some("EditorSearch")),
+        KeyBinding::new("ctrl-f", Find, Some("EditorSearch")),
+        KeyBinding::new("cmd-g", FindNext, Some("EditorSearch")),
+        KeyBinding::new("shift-cmd-g", FindPrevious, Some("EditorSearch")),
+        KeyBinding::new("f3", FindNext, Some("EditorSearch")),
+        KeyBinding::new("shift-f3", FindPrevious, Some("EditorSearch")),
+        KeyBinding::new("alt-c", ToggleCaseSensitive, Some("EditorSearch")),
+        KeyBinding::new("cmd-v", Paste, Some("EditorSearch")),
+        KeyBinding::new("ctrl-v", Paste, Some("EditorSearch")),
     ]);
 }
 

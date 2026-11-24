@@ -320,3 +320,12 @@ fn line_text_strips_any_line_break() {
     let lines: Vec<String> = (0..b.line_count()).map(|r| b.line_text(r)).collect();
     assert_eq!(lines, ["a", "b", "c", "d", "e"]);
 }
+
+#[test]
+fn search_handles_utf8_and_case_insensitive_offsets() {
+    let b = Buffer::from_text("héllo FOO café foo");
+    assert_eq!(b.search("foo", true, 10), vec![15..18]);
+    assert_eq!(b.search("foo", false, 10), vec![6..9, 15..18]);
+    assert_eq!(b.search("CAFÉ", false, 10), vec![10..14]);
+    assert_eq!(b.search("", false, 10), Vec::<std::ops::Range<usize>>::new());
+}

@@ -5,16 +5,18 @@
 //! points at lives in `state.rs`.
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, FocusHandle, Pixels, ScrollHandle,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Pixels, ScrollHandle,
     UniformListScrollHandle, Window, px,
 };
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 
+use crate::search_bar::SearchBar;
 use crate::state::EditorState;
 use crate::types::{CommentTarget, FontConfig};
 use crate::wrap::WrapCache;
-use crate::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+use crate::{CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, Redo, Save, SelectAll, Undo};
 
 pub struct EditorView {
     pub(crate) state: Entity<EditorState>,
@@ -74,10 +76,16 @@ pub struct EditorView {
     /// caret back into the viewport and clears it. Deferred to render
     /// because that's where the wrap cache and measurements are current.
     pub(crate) reveal_caret: Rc<Cell<bool>>,
+    pub(crate) search_bar: Entity<SearchBar>,
+    pub(crate) search_open: bool,
+    pub(crate) pre_search_selection: Option<Range<usize>>,
 }
 
 impl EditorView {
     pub fn new(state: &Entity<EditorState>, cx: &mut Context<Self>) -> Self {
+        let weak = cx.weak_entity();
+        let search_state = state.clone();
+        let search_bar = cx.new(|cx| SearchBar::new(search_state, weak, cx));
         Self {
             state: state.clone(),
             scroll_handle: UniformListScrollHandle::new(),
@@ -98,7 +106,14 @@ impl EditorView {
             goal_col: Rc::new(Cell::new(None)),
             reveal_caret: Rc::new(Cell::new(false)),
             viewport_origin: Rc::new(Cell::new(gpui::Point::default())),
+            search_bar,
+            search_open: false,
+            pre_search_selection: None,
         }
+    }
+
+    pub fn is_search_open(&self) -> bool {
+        self.search_open
     }
 
     /// Scroll the caret into the viewport on the next frame (no-op if it's
@@ -393,6 +408,85 @@ impl EditorView {
         if !self.state.update(cx, |state, cx| state.save(cx)) {
             cx.propagate();
         }
+    }
+
+    pub(crate) fn open_search(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_open {
+            self.pre_search_selection = Some(self.state.read(cx).selection().range.clone());
+            self.search_open = true;
+        }
+        let selected = self.state.read(cx).selected_text();
+        if !selected.is_empty() && !selected.contains('\n') && selected.chars().count() <= 200 {
+            self.search_bar.update(cx, |bar, cx| bar.set_query(selected, cx));
+        } else {
+            let existing = self.search_bar.read(cx).query().to_string();
+            if !existing.is_empty() {
+                self.search_bar.update(cx, |bar, cx| bar.set_query(existing, cx));
+            }
+        }
+        self.reveal_caret.set(true);
+        let handle = self.search_bar.read(cx).focus_handle().clone();
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn find_next(&mut self, _: &FindNext, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_open {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            state.next_match();
+            state.select_current_match();
+            cx.notify();
+        });
+        self.clear_motion_caches();
+        self.reveal_caret.set(true);
+        cx.notify();
+    }
+
+    pub(crate) fn find_prev(
+        &mut self,
+        _: &FindPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.search_open {
+            return;
+        }
+        self.state.update(cx, |state, cx| {
+            state.prev_match();
+            state.select_current_match();
+            cx.notify();
+        });
+        self.clear_motion_caches();
+        self.reveal_caret.set(true);
+        cx.notify();
+    }
+
+    pub(crate) fn close_search(
+        &mut self,
+        _: &CloseSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.search_open {
+            return;
+        }
+        self.search_open = false;
+        let restore = self.pre_search_selection.take();
+        self.state.update(cx, |state, cx| {
+            state.clear_search(cx);
+            if state.selection().is_empty() {
+                if let Some(range) = restore {
+                    let len = state.len_chars();
+                    let start = range.start.min(len);
+                    let end = range.end.min(len).max(start);
+                    state.set_selection(start..end);
+                }
+            }
+        });
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 
     pub(crate) fn clear_motion_caches(&mut self) {

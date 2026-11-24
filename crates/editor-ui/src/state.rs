@@ -7,7 +7,7 @@
 //! `FontConfig`, …) live in `types.rs`, the retained view handle in
 //! `view.rs`, and the `Render` impl plus its paint helpers in `lib.rs`.
 
-use edit_buffer::{Buffer, Edit, LineEnding, Point};
+use edit_buffer::{search_str, Buffer, Edit, LineEnding, Point};
 use gpui::{px, AppContext, Context, EventEmitter, Pixels};
 use std::cell::RefCell;
 use std::io;
@@ -24,6 +24,16 @@ use crate::types::{CommentTarget, FontConfig, IndentOptions, Mode, SearchState, 
 /// `cx.background_spawn` — see `EditorState::rehighlight_from`.
 const SYNC_HIGHLIGHT_THRESHOLD: usize = 64_000;
 
+/// Below this char count, search runs synchronously inline; above it, search
+/// debounces and runs on `cx.background_spawn`.
+const SYNC_SEARCH_THRESHOLD: usize = 64_000;
+
+/// Cap on stored search matches to bound memory on pathological 1-char queries.
+const SEARCH_MATCH_LIMIT: usize = 50_000;
+
+/// Debounce delay for background search on large files.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(50);
+
 /// Consecutive typing edits (`type_text`) within this window coalesce into
 /// one undo entry, so undo works per typing run instead of per keystroke.
 /// Any structural edit (`replace_range`, `set_text`, undo/redo) closes the
@@ -37,6 +47,7 @@ pub struct EditorState {
     mode: Mode,
     selection: Selection,
     search: SearchState,
+    search_generation: u64,
     indent: IndentOptions,
     /// Whole-buffer word-wrap toggle. Off by default (matches today's
     /// clip-long-lines behavior). Actual wrap-point computation is a
@@ -147,6 +158,7 @@ impl EditorState {
             mode,
             selection: Selection::default(),
             search: SearchState::default(),
+            search_generation: 0,
             indent: IndentOptions::default(),
             wrap_enabled: false,
             comment_gutter: false,
@@ -441,7 +453,7 @@ impl EditorState {
         *self.row_widths.borrow_mut() = None;
         self.selection = Selection::default();
         self.rehighlight_from(text, cx);
-        self.rerun_search();
+        self.rerun_search_with_cx(cx);
         cx.notify();
     }
 
@@ -572,7 +584,7 @@ impl EditorState {
         };
         self.marked = None;
         self.rehighlight(cx);
-        self.rerun_search();
+        self.rerun_search_with_cx(cx);
         // Every buffer mutation repaints its views: callers (key handlers,
         // hosts) must not have to remember to notify.
         cx.notify();
@@ -612,7 +624,7 @@ impl EditorState {
         let head = self.selection.range.start.min(self.buffer.len_chars());
         self.selection = Selection { range: head..head };
         self.rehighlight(cx);
-        self.rerun_search();
+        self.rerun_search_with_cx(cx);
         // Every buffer mutation repaints its views: callers (key handlers,
         // hosts) must not have to remember to notify.
         cx.notify();
@@ -783,12 +795,39 @@ impl EditorState {
         }
     }
 
-    // -- search (M3, sync literal; debounced overlay lands in view) ----------
+    // -- search --------------------------------------------------------------
 
     pub fn set_search(&mut self, query: &str, case_sensitive: bool) {
         self.search.query = query.to_string();
         self.search.case_sensitive = case_sensitive;
+        self.search_generation = self.search_generation.wrapping_add(1);
         self.rerun_search();
+    }
+
+    /// Update the search query and run synchronously for small files or
+    /// debounced on a background thread for large files.
+    pub fn update_search(&mut self, query: &str, case_sensitive: bool, cx: &mut Context<Self>) {
+        self.search.query = query.to_string();
+        self.search.case_sensitive = case_sensitive;
+        self.rerun_search_with_cx(cx);
+        cx.notify();
+    }
+
+    pub fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search.query.clear();
+        self.search.matches.clear();
+        self.search.current = None;
+        cx.notify();
+    }
+
+    fn pick_initial_match(&self, matches: &[Range<usize>]) -> Option<usize> {
+        if matches.is_empty() {
+            return None;
+        }
+        let anchor = self.selection.range.start;
+        let ix = matches.partition_point(|m| m.start < anchor);
+        Some(if ix < matches.len() { ix } else { 0 })
     }
 
     fn rerun_search(&mut self) {
@@ -797,14 +836,57 @@ impl EditorState {
             self.search.current = None;
             return;
         }
-        self.search.matches =
-            self.buffer
-                .search(&self.search.query, self.search.case_sensitive, 1000);
-        self.search.current = if self.search.matches.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        let matches = self.buffer.search(
+            &self.search.query,
+            self.search.case_sensitive,
+            SEARCH_MATCH_LIMIT,
+        );
+        self.search.current = self.pick_initial_match(&matches);
+        self.search.matches = matches;
+    }
+
+    fn rerun_search_with_cx(&mut self, cx: &mut Context<Self>) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        if self.search.query.is_empty() {
+            self.search.matches.clear();
+            self.search.current = None;
+            return;
+        }
+        if self.buffer.len_chars() <= SYNC_SEARCH_THRESHOLD {
+            self.rerun_search();
+            return;
+        }
+
+        let gen = self.search_generation;
+        let version = self.buffer.version();
+        let query = self.search.query.clone();
+        let case_sensitive = self.search.case_sensitive;
+        let text = self.buffer.text().to_string();
+        let executor = cx.background_executor().clone();
+
+        cx.spawn(async move |this, cx| {
+            executor.timer(SEARCH_DEBOUNCE).await;
+            let still_current = this
+                .read_with(cx, |state, _| {
+                    state.search_generation == gen && state.buffer.version() == version
+                })
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+            let matches = executor
+                .spawn(async move { search_str(&text, &query, case_sensitive, SEARCH_MATCH_LIMIT) })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if state.search_generation != gen || state.buffer.version() != version {
+                    return;
+                }
+                state.search.current = state.pick_initial_match(&matches);
+                state.search.matches = matches;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn next_match(&mut self) {
@@ -813,6 +895,30 @@ impl EditorState {
         }
         let next = self.search.current.map(|i| i + 1).unwrap_or(0) % self.search.matches.len();
         self.search.current = Some(next);
+    }
+
+    pub fn prev_match(&mut self) {
+        if self.search.matches.is_empty() {
+            return;
+        }
+        let len = self.search.matches.len();
+        let prev = match self.search.current {
+            Some(0) | None => len - 1,
+            Some(i) => i - 1,
+        };
+        self.search.current = Some(prev);
+    }
+
+    pub fn current_match(&self) -> Option<Range<usize>> {
+        let ix = self.search.current?;
+        self.search.matches.get(ix).cloned()
+    }
+
+    /// Move the editor selection to the current search match, if any.
+    pub fn select_current_match(&mut self) {
+        if let Some(range) = self.current_match() {
+            self.set_selection(range);
+        }
     }
 
     // -- highlight -----------------------------------------------------------

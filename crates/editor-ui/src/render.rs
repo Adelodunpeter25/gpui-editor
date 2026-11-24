@@ -164,6 +164,10 @@ impl Render for EditorView {
             .on_action(cx.listener(EditorView::cut))
             .on_action(cx.listener(EditorView::paste))
             .on_action(cx.listener(EditorView::save))
+            .on_action(cx.listener(EditorView::open_search))
+            .on_action(cx.listener(EditorView::find_next))
+            .on_action(cx.listener(EditorView::find_prev))
+            .on_action(cx.listener(EditorView::close_search))
             .on_key_down(cx.listener(EditorView::key_down))
             .on_mouse_up(MouseButton::Left, {
                 let selecting = self.selecting.clone();
@@ -250,6 +254,7 @@ impl Render for EditorView {
                         let cache = wrap_cache.borrow();
                         // Borrowed straight from state: no per-render Vec clone.
                         let comment_selections = state.comment_selections();
+                        let search = state.search();
                         // Consecutive visual rows usually share a buffer row
                         // (wrapped lines): fetch/measure its text once and keep
                         // a forward (char, byte) cursor so slicing is linear.
@@ -305,6 +310,28 @@ impl Render for EditorView {
                                 let row_selection =
                                     row_local_selection(&selection, row_start, row_end)
                                         .and_then(|s| clip_to_subrange(&s, &sub_range));
+                                let row_search_matches = if search.matches.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    let first_ix = search
+                                        .matches
+                                        .partition_point(|m| m.end <= row_start);
+                                    let mut out = Vec::new();
+                                    for (ix, m) in search.matches[first_ix..].iter().enumerate() {
+                                        if m.start >= row_end {
+                                            break;
+                                        }
+                                        if let Some(local) =
+                                            row_local_selection(m, row_start, row_end)
+                                                .and_then(|r| clip_to_subrange(&r, &sub_range))
+                                        {
+                                            let is_current =
+                                                search.current == Some(first_ix + ix);
+                                            out.push((local, is_current));
+                                        }
+                                    }
+                                    out
+                                };
                                 let marked = marked
                                     .as_ref()
                                     .and_then(|m| row_local_selection(m, row_start, row_end))
@@ -360,6 +387,7 @@ impl Render for EditorView {
                                     text,
                                     runs,
                                     row_selection,
+                                    row_search_matches,
                                     row_font.clone(),
                                     interaction.clone(),
                                 )
@@ -408,6 +436,7 @@ impl Render for EditorView {
                     self.scroll_handle.is_scrollable(),
                 ))
             })
+            .when(self.search_open, |el| el.child(self.search_bar.clone()))
             .on_mouse_move({
                 let scroll_handle = self.scroll_handle.clone();
                 let thumb_dragging = self.thumb_dragging.clone();

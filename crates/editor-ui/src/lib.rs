@@ -19,6 +19,7 @@ mod render;
 mod row;
 mod save;
 mod scrollbar;
+mod search_bar;
 mod state;
 mod types;
 mod view;
@@ -27,7 +28,10 @@ mod wrap;
 pub use diff::{DiffLine, DiffLineKind, DiffResult};
 pub use edit_buffer::LineEnding;
 pub use diff_view::{DiffRowOverlay, DiffState, DiffView};
-pub use input::{init, CancelComment, Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+pub use input::{
+    init, CancelComment, CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, Redo, Save,
+    SelectAll, ToggleCaseSensitive, Undo,
+};
 pub use save::{EditorEvent, SaveHandler, SaveRequest, SaveStatus};
 pub use scrollbar::scrollbar_thumb_size;
 pub use state::EditorState;

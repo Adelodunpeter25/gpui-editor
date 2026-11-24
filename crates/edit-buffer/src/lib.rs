@@ -6,4 +6,4 @@
 
 mod types;
 
-pub use types::{Buffer, BufferSnapshot, Edit, LineEnding, Point};
+pub use types::{search_str, Buffer, BufferSnapshot, Edit, LineEnding, Point};
