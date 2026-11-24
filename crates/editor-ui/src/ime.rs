@@ -100,7 +100,7 @@ impl EntityInputHandler for EditorView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.read(cx).is_readonly() {
+        if !self.can_edit(cx) {
             return;
         }
         let range = self.input_target(range_utf16, cx);
@@ -118,7 +118,7 @@ impl EntityInputHandler for EditorView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.read(cx).is_readonly() {
+        if !self.can_edit(cx) {
             return;
         }
         let range = self.input_target(range_utf16, cx);
@@ -171,6 +171,6 @@ impl EntityInputHandler for EditorView {
     }
 
     fn accepts_text_input(&self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
-        !self.state.read(cx).is_readonly()
+        self.can_edit(cx)
     }
 }

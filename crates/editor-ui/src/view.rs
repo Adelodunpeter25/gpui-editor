@@ -79,6 +79,8 @@ pub struct EditorView {
     pub(crate) search_bar: Entity<SearchBar>,
     pub(crate) search_open: bool,
     pub(crate) pre_search_selection: Option<Range<usize>>,
+    pub(crate) vim_mode: bool,
+    pub(crate) vim_insert: bool,
 }
 
 impl EditorView {
@@ -109,11 +111,39 @@ impl EditorView {
             search_bar,
             search_open: false,
             pre_search_selection: None,
+            vim_mode: false,
+            vim_insert: false,
         }
     }
 
     pub fn is_search_open(&self) -> bool {
         self.search_open
+    }
+
+    /// Enable minimal Vim mode (Normal mode by default; `i` enters Insert
+    /// mode, `Escape` returns to Normal mode).
+    pub fn with_vim_mode(mut self, enabled: bool) -> Self {
+        self.vim_mode = enabled;
+        self.vim_insert = false;
+        self
+    }
+
+    pub fn set_vim_mode(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.vim_mode = enabled;
+        self.vim_insert = false;
+        cx.notify();
+    }
+
+    pub fn is_vim_mode(&self) -> bool {
+        self.vim_mode
+    }
+
+    pub fn is_vim_insert(&self) -> bool {
+        self.vim_mode && self.vim_insert
+    }
+
+    pub(crate) fn can_edit(&self, cx: &App) -> bool {
+        !self.state.read(cx).is_readonly() && (!self.vim_mode || self.vim_insert)
     }
 
     /// Scroll the caret into the viewport on the next frame (no-op if it's
@@ -350,6 +380,9 @@ impl EditorView {
     }
 
     pub(crate) fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_edit(cx) {
+            return;
+        }
         self.state.update(cx, |state, cx| state.undo(cx));
         self.clear_motion_caches();
         self.reveal_caret.set(true);
@@ -357,6 +390,9 @@ impl EditorView {
     }
 
     pub(crate) fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_edit(cx) {
+            return;
+        }
         self.state.update(cx, |state, cx| state.redo(cx));
         self.clear_motion_caches();
         self.reveal_caret.set(true);
@@ -366,6 +402,9 @@ impl EditorView {
     /// Cut: copy the selection to the clipboard, then delete it. No-op with
     /// an empty selection (no clipboard churn, no undo entry).
     pub(crate) fn cut(&mut self, _: &Cut, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_edit(cx) {
+            return;
+        }
         let edited = self.state.update(cx, |state, cx| {
             let text = state.selected_text();
             if text.is_empty() {
@@ -386,6 +425,9 @@ impl EditorView {
     /// Paste: replace the selection (or insert at the caret) with clipboard
     /// text. No-op with an empty clipboard.
     pub(crate) fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_edit(cx) {
+            return;
+        }
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };

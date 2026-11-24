@@ -23,8 +23,7 @@ actions!(
         Find,
         FindNext,
         FindPrevious,
-        CloseSearch,
-        ToggleCaseSensitive
+        CloseSearch
     ]
 );
 
@@ -60,7 +59,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-cmd-g", FindPrevious, Some("EditorSearch")),
         KeyBinding::new("f3", FindNext, Some("EditorSearch")),
         KeyBinding::new("shift-f3", FindPrevious, Some("EditorSearch")),
-        KeyBinding::new("alt-c", ToggleCaseSensitive, Some("EditorSearch")),
         KeyBinding::new("cmd-a", SelectAll, Some("EditorSearch")),
         KeyBinding::new("ctrl-a", SelectAll, Some("EditorSearch")),
         KeyBinding::new("cmd-c", Copy, Some("EditorSearch")),
@@ -89,12 +87,39 @@ impl EditorView {
     ) {
         if event.keystroke.key == "escape" {
             self.comment_drag.set(None);
+            if self.focus_handle.is_focused(window)
+                && self.vim_mode
+                && self.vim_insert
+                && self.state.read(cx).marked_range().is_none()
+            {
+                self.vim_insert = false;
+                cx.stop_propagation();
+                window.prevent_default();
+                cx.notify();
+                return;
+            }
         }
         if !self.focus_handle.is_focused(window) || self.state.read(cx).is_readonly() {
             return;
         }
         let key = event.keystroke.key.as_str();
-        let shift = event.keystroke.modifiers.shift;
+        let mods = &event.keystroke.modifiers;
+        let shift = mods.shift;
+        if self.vim_mode && !self.vim_insert {
+            if key == "i"
+                && !shift
+                && !mods.control
+                && !mods.platform
+                && !mods.alt
+                && !mods.function
+            {
+                self.vim_insert = true;
+                cx.stop_propagation();
+                window.prevent_default();
+                cx.notify();
+                return;
+            }
+        }
         match key {
             "left" | "right" | "up" | "down" | "home" | "end" => {
                 cx.stop_propagation();
@@ -102,7 +127,7 @@ impl EditorView {
                 self.move_caret(key, shift, cx);
                 self.reveal_caret.set(true);
             }
-            "backspace" | "delete" | "enter" | "tab" => {
+            "backspace" | "delete" | "enter" | "tab" if self.can_edit(cx) => {
                 cx.stop_propagation();
                 window.prevent_default();
                 self.clear_motion_caches();

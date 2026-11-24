@@ -11,7 +11,7 @@ use crate::cursor::CursorBlink;
 use crate::state::EditorState;
 use crate::view::EditorView;
 use crate::{
-    CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, SelectAll, ToggleCaseSensitive,
+    CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, SelectAll,
 };
 
 pub(crate) struct SearchBar {
@@ -23,7 +23,6 @@ pub(crate) struct SearchBar {
     anchor: usize,
     /// Selection head (caret) in `query` as a char offset.
     head: usize,
-    case_sensitive: bool,
     blink: CursorBlink,
 }
 
@@ -40,7 +39,6 @@ impl SearchBar {
             query: String::new(),
             anchor: 0,
             head: 0,
-            case_sensitive: false,
             blink: CursorBlink::default(),
         }
     }
@@ -68,10 +66,9 @@ impl SearchBar {
         self.query = query;
         self.anchor = 0;
         self.head = len;
-        let case_sensitive = self.case_sensitive;
         let q = self.query.clone();
         self.state.update(cx, |state, cx| {
-            state.update_search(&q, case_sensitive, cx);
+            state.update_search(&q, false, cx);
             state.select_current_match();
         });
         cx.notify();
@@ -105,9 +102,8 @@ impl SearchBar {
 
     fn run_search(&mut self, cx: &mut Context<Self>) {
         let query = self.query.clone();
-        let case_sensitive = self.case_sensitive;
         self.state.update(cx, |state, cx| {
-            state.update_search(&query, case_sensitive, cx);
+            state.update_search(&query, false, cx);
             if query.is_empty() {
                 let pos = state.selection().range.start;
                 state.set_selection(pos..pos);
@@ -248,11 +244,6 @@ impl SearchBar {
         }
     }
 
-    fn toggle_case(&mut self, _: &ToggleCaseSensitive, _window: &mut Window, cx: &mut Context<Self>) {
-        self.case_sensitive = !self.case_sensitive;
-        self.run_search(cx);
-    }
-
     fn find_next(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.editor_view.update(cx, |view, cx| {
             view.find_next(&FindNext, window, cx);
@@ -385,7 +376,6 @@ impl Render for SearchBar {
         let focused = self.focus_handle.is_focused(window);
         let input_focus = self.focus_handle.clone();
         let input_entity = cx.entity();
-        let case_sensitive = self.case_sensitive;
 
         let sel = self.selection_range();
         let before_sel: String = self.query.chars().take(sel.start).collect();
@@ -420,7 +410,6 @@ impl Render for SearchBar {
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(Self::find_prev))
             .on_action(cx.listener(Self::close))
-            .on_action(cx.listener(Self::toggle_case))
             .on_action(cx.listener(Self::refocus))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::copy))
@@ -508,32 +497,6 @@ impl Render for SearchBar {
                     }),
             )
             .child(div().w(px(1.0)).h(px(16.0)).bg(rgba(0xffffff1a)))
-            .child(
-                div()
-                    .id("search-case-toggle")
-                    .w(px(24.0))
-                    .h(px(24.0))
-                    .rounded_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .bg(if case_sensitive {
-                        rgba(0xffffff24)
-                    } else {
-                        rgba(0x00000000)
-                    })
-                    .hover(|s| s.bg(rgba(0xffffff14)))
-                    .text_color(if case_sensitive {
-                        rgb(0xffffff)
-                    } else {
-                        rgb(0xa1a1aa)
-                    })
-                    .child("Aa")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_case(&ToggleCaseSensitive, window, cx);
-                    })),
-            )
             .child(
                 div()
                     .id("search-prev")

@@ -129,7 +129,7 @@ impl Render for EditorView {
         let viewport_height = self.viewport_height.clone();
         let viewport_width = self.viewport_width.clone();
         let viewport_origin = self.viewport_origin.clone();
-        let editable = !self.state.read(cx).is_readonly();
+        let editable = self.can_edit(cx);
         let input_focus = self.focus_handle.clone();
         let input_view = cx.entity();
         let view = input_view.clone();

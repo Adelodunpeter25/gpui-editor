@@ -147,3 +147,32 @@ fn scroll_to_caret_reveals_a_programmatic_selection(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(scroll_offset(&view, cx).y < px(0.));
 }
+
+#[gpui::test]
+fn vim_mode_toggles_insert_with_i_and_escape(cx: &mut TestAppContext) {
+    let (state, view, cx) = open(cx, EditorState::editable("abc", None));
+    view.update(cx, |v, cx| v.set_vim_mode(true, cx));
+    cx.run_until_parked();
+
+    assert!(view.read_with(cx, |v, _| v.is_vim_mode() && !v.is_vim_insert()));
+
+    // Normal mode: typing and backspace/enter do not edit, but arrows still move.
+    cx.simulate_input("x");
+    cx.simulate_keystrokes("right backspace enter");
+    assert_eq!(text(&state, cx), "abc");
+    assert_eq!(caret(&state, cx), 1);
+
+    // Pressing i enters Insert mode; typing now edits the buffer.
+    cx.simulate_keystrokes("i");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| v.is_vim_insert()));
+    cx.simulate_input("Z");
+    assert_eq!(text(&state, cx), "aZbc");
+
+    // Pressing escape returns to Normal mode; typing is ignored again.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |v, _| !v.is_vim_insert()));
+    cx.simulate_input("Q");
+    assert_eq!(text(&state, cx), "aZbc");
+}

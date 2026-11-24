@@ -120,7 +120,7 @@ A system-installed monospace font (e.g. `"Menlo"` on macOS) needs no
 editor_ui::init(cx); // binds copy/select-all (cmd/ctrl-c, cmd/ctrl-a),
                      // undo/redo/cut/paste (cmd/ctrl-z, shift-z, x, v),
                      // save (cmd/ctrl-s), and search (cmd/ctrl-f, cmd/ctrl-g,
-                     // f3, enter/shift-enter, escape, alt-c)
+                     // f3, enter/shift-enter, escape)
 ```
 
 Call this once at app startup, same as `cx.bind_keys(...)` for your own
@@ -133,7 +133,7 @@ so they only fire while an editor (or its find bar) is focused and don't
 collide with your app's own `cmd-s`/`cmd-z`/`cmd-f` elsewhere. To use
 different keys, skip `init` and bind the exported actions
 (`editor_ui::{Copy, Cut, Paste, Undo, Redo, SelectAll, Save, Find,
-FindNext, FindPrevious, CloseSearch, ToggleCaseSensitive}`) yourself.
+FindNext, FindPrevious, CloseSearch}`) yourself.
 
 ## 4. Create state + view
 
@@ -165,6 +165,12 @@ and becomes a single undo entry once committed.
 
 Every edit notifies the state's observers, so the view repaints on its own
 and `cx.observe(&state, …)` is all a host needs to react to changes.
+
+**Minimal Vim mode (opt-in).** Call `EditorView::with_vim_mode(true)` (or
+`view.set_vim_mode(true, cx)`) on an editable view to start in Normal mode
+(editing disabled, caret navigation still active). Pressing `i` enters
+Insert mode; pressing `Escape` returns to Normal mode. Inspect the current
+state with `is_vim_mode()` and `is_vim_insert()`.
 
 ## 5. Select and scroll to a line
 

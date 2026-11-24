@@ -31,7 +31,7 @@ pub use edit_buffer::LineEnding;
 pub use diff_view::{DiffRowOverlay, DiffState, DiffView};
 pub use input::{
     init, CancelComment, CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, Redo, Save,
-    SelectAll, ToggleCaseSensitive, Undo,
+    SelectAll, Undo,
 };
 pub use save::{EditorEvent, SaveHandler, SaveRequest, SaveStatus};
 pub use scrollbar::scrollbar_thumb_size;
