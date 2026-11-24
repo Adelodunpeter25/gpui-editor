@@ -460,18 +460,21 @@ impl Render for SearchBar {
                             .child(after_sel)
                     }),
             )
-            .when(!count_label.is_empty(), |el| {
-                el.child(
-                    div()
-                        .px_1()
-                        .text_color(if search.matches.is_empty() {
-                            rgb(0xf38ba8)
-                        } else {
-                            rgb(0xa6adc8)
-                        })
-                        .child(count_label),
-                )
-            })
+            .child(
+                div()
+                    .w(px(76.0))
+                    .px_1()
+                    .flex()
+                    .justify_end()
+                    .overflow_x_hidden()
+                    .whitespace_nowrap()
+                    .text_color(if !self.query.is_empty() && search.matches.is_empty() {
+                        rgb(0xf38ba8)
+                    } else {
+                        rgb(0xa6adc8)
+                    })
+                    .child(count_label),
+            )
             .child(
                 div()
                     .id("search-case-toggle")
