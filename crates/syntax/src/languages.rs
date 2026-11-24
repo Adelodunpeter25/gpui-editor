@@ -23,12 +23,12 @@ impl Language {
     }
 }
 
-// Built-in languages mapping to Lumis language definitions
+// Built-in languages — major/popular only; niche grammars are excluded to keep
+// binary size down. Each entry maps to a lumis feature compiled in via Cargo.toml.
 pub const PLAIN_TEXT: Language = Language::new("plain_text", lumis::languages::Language::PlainText, &["txt", "text"]);
 pub const RUST: Language = Language::new("rust", lumis::languages::Language::Rust, &["rs"]);
 pub const TOML: Language = Language::new("toml", lumis::languages::Language::Toml, &["toml"]);
 pub const JSON: Language = Language::new("json", lumis::languages::Language::JSON, &["json"]);
-pub const JSON5: Language = Language::new("json5", lumis::languages::Language::JSON5, &["json5"]);
 pub const MARKDOWN: Language = Language::new("markdown", lumis::languages::Language::Markdown, &["md", "markdown"]);
 pub const JAVASCRIPT: Language = Language::new("javascript", lumis::languages::Language::JavaScript, &["js", "mjs", "cjs"]);
 pub const TYPESCRIPT: Language = Language::new("typescript", lumis::languages::Language::TypeScript, &["ts", "mts", "cts"]);
@@ -55,16 +55,10 @@ pub const LUA: Language = Language::new("lua", lumis::languages::Language::Lua, 
 pub const DOCKERFILE: Language = Language::new("dockerfile", lumis::languages::Language::Dockerfile, &["dockerfile", "Dockerfile"]);
 pub const ELIXIR: Language = Language::new("elixir", lumis::languages::Language::Elixir, &["ex", "exs"]);
 pub const ERLANG: Language = Language::new("erlang", lumis::languages::Language::Erlang, &["erl", "hrl"]);
-pub const HASKELL: Language = Language::new("haskell", lumis::languages::Language::Haskell, &["hs", "lhs"]);
-pub const OCAML: Language = Language::new("ocaml", lumis::languages::Language::OCaml, &["ml", "mli"]);
 pub const SCALA: Language = Language::new("scala", lumis::languages::Language::Scala, &["scala", "sc"]);
-pub const CLOJURE: Language = Language::new("clojure", lumis::languages::Language::Clojure, &["clj", "cljs", "cljc", "edn"]);
 pub const DART: Language = Language::new("dart", lumis::languages::Language::Dart, &["dart"]);
-pub const GLSL: Language = Language::new("glsl", lumis::languages::Language::Glsl, &["glsl", "vert", "frag", "geom", "comp"]);
 pub const MAKEFILE: Language = Language::new("makefile", lumis::languages::Language::Make, &["mk", "Makefile", "makefile"]);
 pub const CMAKE: Language = Language::new("cmake", lumis::languages::Language::CMake, &["cmake", "CMakeLists.txt"]);
-pub const NIX: Language = Language::new("nix", lumis::languages::Language::Nix, &["nix"]);
-pub const SOLIDITY: Language = Language::new("solidity", lumis::languages::Language::Solidity, &["sol"]);
 pub const GRAPHQL: Language = Language::new("graphql", lumis::languages::Language::GraphQL, &["graphql", "gql"]);
 pub const PROTOBUF: Language = Language::new("protobuf", lumis::languages::Language::ProtoBuf, &["proto"]);
 pub const ASTRO: Language = Language::new("astro", lumis::languages::Language::Astro, &["astro"]);
@@ -79,7 +73,6 @@ pub const ALL_LANGUAGES: &[&Language] = &[
     &RUST,
     &TOML,
     &JSON,
-    &JSON5,
     &MARKDOWN,
     &JAVASCRIPT,
     &TYPESCRIPT,
@@ -106,16 +99,10 @@ pub const ALL_LANGUAGES: &[&Language] = &[
     &DOCKERFILE,
     &ELIXIR,
     &ERLANG,
-    &HASKELL,
-    &OCAML,
     &SCALA,
-    &CLOJURE,
     &DART,
-    &GLSL,
     &MAKEFILE,
     &CMAKE,
-    &NIX,
-    &SOLIDITY,
     &GRAPHQL,
     &PROTOBUF,
     &ASTRO,

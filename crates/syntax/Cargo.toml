@@ -4,4 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lumis = { version = "0.13", default-features = false, features = ["all-languages"] }
+lumis = { version = "0.19", default-features = false, features = [
+    # Web core
+    "lang-bundle-web",        # css, html, javascript, json, tsx, typescript
+    "lang-bundle-web-extra",  # astro, dart, graphql, markdown, markdown-inline, php, scss, svelte, vue, xml + more
+    # Systems / native
+    "lang-bundle-system",     # bash, c, cmake, cpp, go, make, rust, zig, zsh + asm, llvm, wat
+    # Backend languages
+    "lang-bundle-backend",    # csharp, elixir, erlang, go, java, javadoc, kotlin, php, protobuf, python, ruby, rust, scala, sql, typescript
+    # Individual extras not covered by any bundle above
+    "lang-diff",
+    "lang-dockerfile",
+    "lang-ini",
+    "lang-lua",
+    "lang-swift",
+    "lang-toml",
+    "lang-yaml",
+] }
