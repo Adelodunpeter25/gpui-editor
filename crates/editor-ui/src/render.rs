@@ -243,6 +243,11 @@ impl Render for EditorView {
                         // Caret: only an empty selection in a focused,
                         // editable editor paints one (a non-empty selection
                         // keeps today's highlight; readonly never shows it).
+                        let caret_width = if this.vim_mode && !this.vim_insert {
+                            px(5.0)
+                        } else {
+                            px(2.0)
+                        };
                         let caret_offset = if selection.is_empty()
                             && !state.is_readonly()
                             && !this.search_open
@@ -379,6 +384,7 @@ impl Render for EditorView {
                                     comment_hover_row: interaction.comment_hover_row.get(),
                                     comment_drag: interaction.comment_drag.get(),
                                     caret_col,
+                                    caret_width,
                                     marked,
                                     char_width,
                                     tab_width: state.tab_width(),

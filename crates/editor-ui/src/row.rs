@@ -96,6 +96,7 @@ pub(crate) struct RowMeta {
     /// Caret column within this sub-line's chars, when the caret is on this
     /// sub-line and the editor is focused + editable (empty selection).
     pub(crate) caret_col: Option<usize>,
+    pub(crate) caret_width: Pixels,
     /// In-progress IME composition clipped to this sub-line's chars —
     /// underlined so provisional text reads as not yet committed.
     pub(crate) marked: Option<Range<usize>>,
@@ -127,6 +128,7 @@ pub(crate) fn render_line(
         comment_hover_row,
         comment_drag,
         caret_col,
+        caret_width,
         marked,
         char_width,
         tab_width,
@@ -164,7 +166,7 @@ pub(crate) fn render_line(
             .absolute()
             .top_0()
             .left(indent_px + caret_x)
-            .w(px(2.0))
+            .w(caret_width)
             .h_full()
             .bg(rgba(0xffffffcc))
             .rounded_xs()
