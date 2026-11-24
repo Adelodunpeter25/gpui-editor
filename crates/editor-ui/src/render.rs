@@ -245,6 +245,7 @@ impl Render for EditorView {
                         // keeps today's highlight; readonly never shows it).
                         let caret_offset = if selection.is_empty()
                             && !state.is_readonly()
+                            && !this.search_open
                             && this.focus_handle.is_focused(window)
                         {
                             Some(selection.start)

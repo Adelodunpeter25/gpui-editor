@@ -452,7 +452,10 @@ impl Render for SearchBar {
                             .items_center()
                             .overflow_x_hidden()
                             .when(self.query.is_empty(), |el| {
-                                el.child(
+                                el.when(focused, |el| {
+                                    el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
+                                })
+                                .child(
                                     div()
                                         .text_color(rgb(0x71717a))
                                         .child("Find in file…"),
