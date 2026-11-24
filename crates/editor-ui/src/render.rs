@@ -203,7 +203,8 @@ impl Render for EditorView {
                 canvas(
                     move |bounds, _window, cx| {
                         let changed = viewport_height.get() != bounds.size.height
-                            || viewport_width.get() != bounds.size.width;
+                            || viewport_width.get() != bounds.size.width
+                            || viewport_origin.get() != bounds.origin;
                         viewport_height.set(bounds.size.height);
                         viewport_width.set(bounds.size.width);
                         viewport_origin.set(bounds.origin);
