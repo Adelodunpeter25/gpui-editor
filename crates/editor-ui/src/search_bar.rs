@@ -9,15 +9,19 @@ use std::ops::Range;
 
 use crate::state::EditorState;
 use crate::view::EditorView;
-use crate::{CloseSearch, Find, FindNext, FindPrevious, Paste, ToggleCaseSensitive};
+use crate::{
+    CloseSearch, Copy, Cut, Find, FindNext, FindPrevious, Paste, SelectAll, ToggleCaseSensitive,
+};
 
 pub(crate) struct SearchBar {
     state: Entity<EditorState>,
     editor_view: WeakEntity<EditorView>,
     focus_handle: FocusHandle,
     query: String,
-    /// Caret position in `query` as a char offset.
-    cursor: usize,
+    /// Selection anchor in `query` as a char offset.
+    anchor: usize,
+    /// Selection head (caret) in `query` as a char offset.
+    head: usize,
     case_sensitive: bool,
 }
 
@@ -32,7 +36,8 @@ impl SearchBar {
             editor_view,
             focus_handle: cx.focus_handle(),
             query: String::new(),
-            cursor: 0,
+            anchor: 0,
+            head: 0,
             case_sensitive: false,
         }
     }
@@ -46,8 +51,10 @@ impl SearchBar {
     }
 
     pub(crate) fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.cursor = query.chars().count();
+        let len = query.chars().count();
         self.query = query;
+        self.anchor = 0;
+        self.head = len;
         let case_sensitive = self.case_sensitive;
         let q = self.query.clone();
         self.state.update(cx, |state, cx| {
@@ -55,6 +62,10 @@ impl SearchBar {
             state.select_current_match();
         });
         cx.notify();
+    }
+
+    fn selection_range(&self) -> Range<usize> {
+        self.anchor.min(self.head)..self.anchor.max(self.head)
     }
 
     fn char_to_byte(&self, char_ix: usize) -> usize {
@@ -99,63 +110,122 @@ impl SearchBar {
         let start_b = self.char_to_byte(start);
         let end_b = self.char_to_byte(end);
         self.query.replace_range(start_b..end_b, text);
-        self.cursor = start + text.chars().count();
+        let caret = start + text.chars().count();
+        self.anchor = caret;
+        self.head = caret;
         self.run_search(cx);
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus_handle.is_focused(_window) {
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.is_focused(window) {
             return;
         }
         let key = event.keystroke.key.as_str();
+        let shift = event.keystroke.modifiers.shift;
         let len = self.query.chars().count();
+        let sel = self.selection_range();
         match key {
             "backspace" => {
                 cx.stop_propagation();
-                if self.cursor > 0 {
-                    let c = self.cursor;
+                if !sel.is_empty() {
+                    self.replace_char_range(sel, "", cx);
+                } else if self.head > 0 {
+                    let c = self.head;
                     self.replace_char_range(c - 1..c, "", cx);
                 }
             }
             "delete" => {
                 cx.stop_propagation();
-                if self.cursor < len {
-                    let c = self.cursor;
+                if !sel.is_empty() {
+                    self.replace_char_range(sel, "", cx);
+                } else if self.head < len {
+                    let c = self.head;
                     self.replace_char_range(c..c + 1, "", cx);
                 }
             }
             "left" => {
                 cx.stop_propagation();
-                self.cursor = self.cursor.saturating_sub(1);
+                if shift {
+                    self.head = self.head.saturating_sub(1);
+                } else if !sel.is_empty() {
+                    self.anchor = sel.start;
+                    self.head = sel.start;
+                } else {
+                    self.head = self.head.saturating_sub(1);
+                    self.anchor = self.head;
+                }
                 cx.notify();
             }
             "right" => {
                 cx.stop_propagation();
-                self.cursor = (self.cursor + 1).min(len);
+                if shift {
+                    self.head = (self.head + 1).min(len);
+                } else if !sel.is_empty() {
+                    self.anchor = sel.end;
+                    self.head = sel.end;
+                } else {
+                    self.head = (self.head + 1).min(len);
+                    self.anchor = self.head;
+                }
                 cx.notify();
             }
             "home" => {
                 cx.stop_propagation();
-                self.cursor = 0;
+                self.head = 0;
+                if !shift {
+                    self.anchor = 0;
+                }
                 cx.notify();
             }
             "end" => {
                 cx.stop_propagation();
-                self.cursor = len;
+                self.head = len;
+                if !shift {
+                    self.anchor = len;
+                }
                 cx.notify();
             }
             _ => {}
         }
     }
 
+    fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        self.anchor = 0;
+        self.head = self.query.chars().count();
+        cx.notify();
+    }
+
+    fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let sel = self.selection_range();
+        if !sel.is_empty() {
+            let sb = self.char_to_byte(sel.start);
+            let eb = self.char_to_byte(sel.end);
+            cx.write_to_clipboard(ClipboardItem::new_string(self.query[sb..eb].to_string()));
+        }
+    }
+
+    fn cut(&mut self, _: &Cut, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let sel = self.selection_range();
+        if !sel.is_empty() {
+            let sb = self.char_to_byte(sel.start);
+            let eb = self.char_to_byte(sel.end);
+            cx.write_to_clipboard(ClipboardItem::new_string(self.query[sb..eb].to_string()));
+            self.replace_char_range(sel, "", cx);
+        }
+    }
+
     fn paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
         let single_line = text.replace(['\r', '\n'], " ");
         if !single_line.is_empty() {
-            let c = self.cursor;
-            self.replace_char_range(c..c, &single_line, cx);
+            let sel = self.selection_range();
+            self.replace_char_range(sel, &single_line, cx);
         }
     }
 
@@ -183,7 +253,10 @@ impl SearchBar {
     }
 
     fn refocus(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        self.anchor = 0;
+        self.head = self.query.chars().count();
         window.focus(&self.focus_handle, cx);
+        cx.notify();
     }
 }
 
@@ -209,10 +282,10 @@ impl EntityInputHandler for SearchBar {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let u = self.char_to_utf16(self.cursor);
+        let sel = self.selection_range();
         Some(UTF16Selection {
-            reversed: false,
-            range: u..u,
+            reversed: self.head < self.anchor,
+            range: self.char_to_utf16(sel.start)..self.char_to_utf16(sel.end),
         })
     }
 
@@ -235,7 +308,7 @@ impl EntityInputHandler for SearchBar {
     ) {
         let range = match range_utf16 {
             Some(r) => self.utf16_to_char(r.start)..self.utf16_to_char(r.end),
-            None => self.cursor..self.cursor,
+            None => self.selection_range(),
         };
         let clean = text.replace(['\r', '\n'], "");
         self.replace_char_range(range, &clean, cx);
@@ -268,7 +341,7 @@ impl EntityInputHandler for SearchBar {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.char_to_utf16(self.cursor))
+        Some(self.char_to_utf16(self.head))
     }
 
     fn accepts_text_input(&self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
@@ -293,8 +366,15 @@ impl Render for SearchBar {
         let input_entity = cx.entity();
         let case_sensitive = self.case_sensitive;
 
-        let before_cursor: String = self.query.chars().take(self.cursor).collect();
-        let after_cursor: String = self.query.chars().skip(self.cursor).collect();
+        let sel = self.selection_range();
+        let before_sel: String = self.query.chars().take(sel.start).collect();
+        let in_sel: String = self
+            .query
+            .chars()
+            .skip(sel.start)
+            .take(sel.end - sel.start)
+            .collect();
+        let after_sel: String = self.query.chars().skip(sel.end).collect();
 
         div()
             .id("editor-search-bar")
@@ -321,6 +401,9 @@ impl Render for SearchBar {
             .on_action(cx.listener(Self::close))
             .on_action(cx.listener(Self::toggle_case))
             .on_action(cx.listener(Self::refocus))
+            .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -367,11 +450,14 @@ impl Render for SearchBar {
                         )
                     })
                     .when(!self.query.is_empty(), |el| {
-                        el.child(before_cursor)
-                            .when(focused, |el| {
+                        el.child(before_sel)
+                            .when(!sel.is_empty(), |el| {
+                                el.child(div().bg(rgba(0x3b82f680)).child(in_sel))
+                            })
+                            .when(sel.is_empty() && focused, |el| {
                                 el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xcdd6f4)))
                             })
-                            .child(after_cursor)
+                            .child(after_sel)
                     }),
             )
             .when(!count_label.is_empty(), |el| {

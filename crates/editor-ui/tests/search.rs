@@ -119,3 +119,29 @@ fn cmd_f_prefills_from_single_line_selection_and_works_in_readonly(cx: &mut Test
         assert_eq!(s.search().matches, vec![0..5, 12..17]);
     });
 }
+
+#[gpui::test]
+fn cmd_a_in_search_bar_selects_query_not_editor_buffer(cx: &mut TestAppContext) {
+    let (state, _view, cx) = open(cx, EditorState::editable("foo bar baz", None));
+
+    cx.simulate_keystrokes("cmd-f");
+    cx.run_until_parked();
+    cx.simulate_input("foo");
+    cx.run_until_parked();
+
+    // Cmd+A must select the search query, not the editor buffer.
+    cx.simulate_keystrokes("cmd-a");
+    cx.run_until_parked();
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.selection().range, 0..3);
+    });
+
+    // Typing replaces the selected search query.
+    cx.simulate_input("bar");
+    cx.run_until_parked();
+    state.read_with(cx, |s, _| {
+        assert_eq!(s.text(), "foo bar baz");
+        assert_eq!(s.search().query, "bar");
+        assert_eq!(s.search().matches, vec![4..7]);
+    });
+}

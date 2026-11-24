@@ -61,6 +61,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("f3", FindNext, Some("EditorSearch")),
         KeyBinding::new("shift-f3", FindPrevious, Some("EditorSearch")),
         KeyBinding::new("alt-c", ToggleCaseSensitive, Some("EditorSearch")),
+        KeyBinding::new("cmd-a", SelectAll, Some("EditorSearch")),
+        KeyBinding::new("ctrl-a", SelectAll, Some("EditorSearch")),
+        KeyBinding::new("cmd-c", Copy, Some("EditorSearch")),
+        KeyBinding::new("ctrl-c", Copy, Some("EditorSearch")),
+        KeyBinding::new("cmd-x", Cut, Some("EditorSearch")),
+        KeyBinding::new("ctrl-x", Cut, Some("EditorSearch")),
         KeyBinding::new("cmd-v", Paste, Some("EditorSearch")),
         KeyBinding::new("ctrl-v", Paste, Some("EditorSearch")),
     ]);
