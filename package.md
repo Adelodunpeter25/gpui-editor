@@ -228,8 +228,8 @@ Hover a code row or its line-number gutter to reveal the `+` chip. Press and
 drag from the chip to select a contiguous range; releasing invokes the
 callback once with the final `CommentTarget`. A single-line target is reported
 as `start_line == end_line`. Escape cancels an in-progress drag. The selected
-rows use a fixed translucent yellow review highlight, and the chip uses a fixed
-yellow accent independent of the syntax theme. The editor does not own or
+rows use a fixed translucent yellow review highlight, and the `+` chip renders
+as a circular badge on the gutter's right border seam. The editor does not own or
 render the host comment composer—the callback is the integration seam.
 
 ## 7. Update the editor from outside (e.g. your own "open file" flow)
