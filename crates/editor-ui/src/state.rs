@@ -861,7 +861,7 @@ impl EditorState {
         let version = self.buffer.version();
         let query = self.search.query.clone();
         let case_sensitive = self.search.case_sensitive;
-        let text = self.buffer.text().to_string();
+        let rope = self.buffer.text().clone();
         let executor = cx.background_executor().clone();
 
         cx.spawn(async move |this, cx| {
@@ -875,7 +875,10 @@ impl EditorState {
                 return;
             }
             let matches = executor
-                .spawn(async move { search_str(&text, &query, case_sensitive, SEARCH_MATCH_LIMIT) })
+                .spawn(async move {
+                    let text = rope.to_string();
+                    search_str(&text, &query, case_sensitive, SEARCH_MATCH_LIMIT)
+                })
                 .await;
             let _ = this.update(cx, |state, cx| {
                 if state.search_generation != gen || state.buffer.version() != version {

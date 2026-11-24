@@ -450,10 +450,11 @@ pub fn search_str(hay: &str, needle: &str, case_sensitive: bool, limit: usize) -
         let mut last_char = 0usize;
 
         while i <= end {
-            let b = hay_bytes[i];
-            if (b == b0_lower || b == b0_upper)
-                && hay_bytes[i..i + nlen].eq_ignore_ascii_case(needle_bytes)
-            {
+            let Some(rel) = memchr::memchr2(b0_lower, b0_upper, &hay_bytes[i..=end]) else {
+                break;
+            };
+            i += rel;
+            if hay_bytes[i..i + nlen].eq_ignore_ascii_case(needle_bytes) {
                 let start_char = if hay_is_ascii {
                     i
                 } else {
