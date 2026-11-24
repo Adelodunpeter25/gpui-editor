@@ -6,6 +6,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::ops::Range;
+use std::time::Duration;
 
 use crate::state::EditorState;
 use crate::view::EditorView;
@@ -23,6 +24,8 @@ pub(crate) struct SearchBar {
     /// Selection head (caret) in `query` as a char offset.
     head: usize,
     case_sensitive: bool,
+    blink_visible: bool,
+    blink_task: Option<Task<()>>,
 }
 
 impl SearchBar {
@@ -39,7 +42,33 @@ impl SearchBar {
             anchor: 0,
             head: 0,
             case_sensitive: false,
+            blink_visible: true,
+            blink_task: None,
         }
+    }
+
+    pub(crate) fn reset_blink(&mut self, cx: &mut Context<Self>) {
+        self.blink_visible = true;
+        let executor = cx.background_executor().clone();
+        self.blink_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(530)).await;
+                let keep_going = this
+                    .update(cx, |bar, cx| {
+                        bar.blink_visible = !bar.blink_visible;
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !keep_going {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub(crate) fn stop_blink(&mut self) {
+        self.blink_task = None;
+        self.blink_visible = true;
     }
 
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
@@ -113,6 +142,7 @@ impl SearchBar {
         let caret = start + text.chars().count();
         self.anchor = caret;
         self.head = caret;
+        self.reset_blink(cx);
         self.run_search(cx);
     }
 
@@ -247,6 +277,7 @@ impl SearchBar {
     }
 
     fn close(&mut self, _: &CloseSearch, window: &mut Window, cx: &mut Context<Self>) {
+        self.stop_blink();
         let _ = self.editor_view.update(cx, |view, cx| {
             view.close_search(&CloseSearch, window, cx);
         });
@@ -255,6 +286,7 @@ impl SearchBar {
     fn refocus(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
         self.anchor = 0;
         self.head = self.query.chars().count();
+        self.reset_blink(cx);
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -452,7 +484,7 @@ impl Render for SearchBar {
                             .items_center()
                             .overflow_x_hidden()
                             .when(self.query.is_empty(), |el| {
-                                el.when(focused, |el| {
+                                el.when(focused && self.blink_visible, |el| {
                                     el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
                                 })
                                 .child(
@@ -466,7 +498,7 @@ impl Render for SearchBar {
                                     .when(!sel.is_empty(), |el| {
                                         el.child(div().bg(rgba(0x3b82f680)).child(in_sel))
                                     })
-                                    .when(sel.is_empty() && focused, |el| {
+                                    .when(sel.is_empty() && focused && self.blink_visible, |el| {
                                         el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
                                     })
                                     .child(after_sel)

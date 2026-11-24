@@ -425,7 +425,10 @@ impl EditorView {
             }
         }
         self.reveal_caret.set(true);
-        let handle = self.search_bar.read(cx).focus_handle().clone();
+        let handle = self.search_bar.update(cx, |bar, cx| {
+            bar.reset_blink(cx);
+            bar.focus_handle().clone()
+        });
         window.focus(&handle, cx);
         cx.notify();
     }
