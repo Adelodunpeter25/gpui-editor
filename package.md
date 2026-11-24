@@ -53,8 +53,8 @@ to an exact git commit here:
 
 ```toml
 # your host app's Cargo.toml
-gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f" }
-gpui_platform = { version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "5631830c564afa89b3aba679f45d9c3345f9460f", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
+gpui = { version = "0.2.2", git = "https://github.com/longbridge/gpui-fast" }
+gpui_platform = { version = "0.1.0", git = "https://github.com/longbridge/gpui-fast", features = ["font-kit", "runtime_shaders", "x11", "wayland"] }
 
 editor-ui = { git = "<this repo's url>" } # or { path = "..." } in a workspace
 ```
@@ -119,19 +119,21 @@ A system-installed monospace font (e.g. `"Menlo"` on macOS) needs no
 ```rust
 editor_ui::init(cx); // binds copy/select-all (cmd/ctrl-c, cmd/ctrl-a),
                      // undo/redo/cut/paste (cmd/ctrl-z, shift-z, x, v),
-                     // and save (cmd/ctrl-s)
+                     // save (cmd/ctrl-s), and search (cmd/ctrl-f, cmd/ctrl-g,
+                     // f3, enter/shift-enter, escape, alt-c)
 ```
 
 Call this once at app startup, same as `cx.bind_keys(...)` for your own
 actions. Without it, those actions exist on `EditorView` but have no keys
 bound to fire them — copy/select-all, the edit-mode clipboard/undo combos,
-and save silently do nothing.
+search, and save silently do nothing.
 
-All bindings are scoped to the `"Editor"` key context, so they only fire
-while an editor is focused and don't collide with your app's own
-`cmd-s`/`cmd-z` elsewhere. To use different keys, skip `init` and bind the
-exported actions (`editor_ui::{Copy, Cut, Paste, Undo, Redo, SelectAll,
-Save}`) yourself.
+All bindings are scoped to the `"Editor"` and `"EditorSearch"` key contexts,
+so they only fire while an editor (or its find bar) is focused and don't
+collide with your app's own `cmd-s`/`cmd-z`/`cmd-f` elsewhere. To use
+different keys, skip `init` and bind the exported actions
+(`editor_ui::{Copy, Cut, Paste, Undo, Redo, SelectAll, Save, Find,
+FindNext, FindPrevious, CloseSearch, ToggleCaseSensitive}`) yourself.
 
 ## 4. Create state + view
 
@@ -338,9 +340,8 @@ handful of named tokens.
 
 ## 10. Not yet available (don't build against these expecting them to exist)
 
-- Edit mode is plain-text only: no search overlay, no bracket-match
-  rendering (the model methods exist on `EditorState`, nothing calls them
-  from `EditorView` yet).
+- No bracket-match rendering yet (the model method exists on
+  `EditorState`, nothing calls it from `EditorView` yet).
 - Editing covers the basics only. Not there yet: word/line motion and
   delete (alt/cmd + arrows or backspace move and delete one character),
   shift-click, double-click word select, PageUp/PageDown, and block
