@@ -11,6 +11,7 @@
 //! (`ime.rs`), and saving (`save.rs`). This root file is module
 //! declarations + re-exports only.
 
+mod cursor;
 mod diff_view;
 mod ime;
 mod input;

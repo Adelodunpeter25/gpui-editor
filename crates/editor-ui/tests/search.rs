@@ -91,17 +91,20 @@ fn cmd_f_opens_search_without_editing_buffer_and_escape_restores_focus(cx: &mut 
         assert_eq!(s.selection().range, 0..3);
     });
 
-    // Escape closes search and restores focus to the editor.
+    // Escape closes search, clears highlights/match selection, and restores focus.
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     view.read_with(cx, |v, _| assert!(!v.is_search_open()));
-    state.read_with(cx, |s, _| assert!(s.search().matches.is_empty()));
+    state.read_with(cx, |s, _| {
+        assert!(s.search().matches.is_empty());
+        assert!(s.selection().is_empty());
+    });
 
-    // Typing now goes back into the editor buffer.
+    // Typing now goes back into the editor buffer at the restored caret.
     cx.simulate_input("X");
     cx.run_until_parked();
     state.read_with(cx, |s, _| {
-        assert_eq!(s.text(), "X bar foo baz foo");
+        assert_eq!(s.text(), "Xfoo bar foo baz foo");
     });
 }
 
@@ -143,5 +146,15 @@ fn cmd_a_in_search_bar_selects_query_not_editor_buffer(cx: &mut TestAppContext) 
         assert_eq!(s.text(), "foo bar baz");
         assert_eq!(s.search().query, "bar");
         assert_eq!(s.search().matches, vec![4..7]);
+        assert_eq!(s.selection().range, 4..7);
+    });
+
+    // Clearing the search bar removes all highlights and match selection.
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.run_until_parked();
+    state.read_with(cx, |s, _| {
+        assert!(s.search().query.is_empty());
+        assert!(s.search().matches.is_empty());
+        assert!(s.selection().is_empty());
     });
 }

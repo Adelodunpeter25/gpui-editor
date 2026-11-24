@@ -6,8 +6,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::ops::Range;
-use std::time::Duration;
 
+use crate::cursor::CursorBlink;
 use crate::state::EditorState;
 use crate::view::EditorView;
 use crate::{
@@ -24,8 +24,7 @@ pub(crate) struct SearchBar {
     /// Selection head (caret) in `query` as a char offset.
     head: usize,
     case_sensitive: bool,
-    blink_visible: bool,
-    blink_task: Option<Task<()>>,
+    blink: CursorBlink,
 }
 
 impl SearchBar {
@@ -42,33 +41,18 @@ impl SearchBar {
             anchor: 0,
             head: 0,
             case_sensitive: false,
-            blink_visible: true,
-            blink_task: None,
+            blink: CursorBlink::default(),
         }
     }
 
     pub(crate) fn reset_blink(&mut self, cx: &mut Context<Self>) {
-        self.blink_visible = true;
-        let executor = cx.background_executor().clone();
-        self.blink_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                executor.timer(Duration::from_millis(530)).await;
-                let keep_going = this
-                    .update(cx, |bar, cx| {
-                        bar.blink_visible = !bar.blink_visible;
-                        cx.notify();
-                    })
-                    .is_ok();
-                if !keep_going {
-                    break;
-                }
-            }
-        }));
+        self.blink.reset(cx, |bar, visible, _| {
+            bar.blink.set_visible(visible);
+        });
     }
 
     pub(crate) fn stop_blink(&mut self) {
-        self.blink_task = None;
-        self.blink_visible = true;
+        self.blink.stop();
     }
 
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
@@ -124,7 +108,12 @@ impl SearchBar {
         let case_sensitive = self.case_sensitive;
         self.state.update(cx, |state, cx| {
             state.update_search(&query, case_sensitive, cx);
-            state.select_current_match();
+            if query.is_empty() {
+                let pos = state.selection().range.start;
+                state.set_selection(pos..pos);
+            } else {
+                state.select_current_match();
+            }
         });
         let _ = self.editor_view.update(cx, |view, cx| {
             view.scroll_to_caret(cx);
@@ -484,7 +473,7 @@ impl Render for SearchBar {
                             .items_center()
                             .overflow_x_hidden()
                             .when(self.query.is_empty(), |el| {
-                                el.when(focused && self.blink_visible, |el| {
+                                el.when(focused && self.blink.is_visible(), |el| {
                                     el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
                                 })
                                 .child(
@@ -498,7 +487,7 @@ impl Render for SearchBar {
                                     .when(!sel.is_empty(), |el| {
                                         el.child(div().bg(rgba(0x3b82f680)).child(in_sel))
                                     })
-                                    .when(sel.is_empty() && focused && self.blink_visible, |el| {
+                                    .when(sel.is_empty() && focused && self.blink.is_visible(), |el| {
                                         el.child(div().w(px(1.5)).h(px(14.0)).bg(rgb(0xe4e4e7)))
                                     })
                                     .child(after_sel)

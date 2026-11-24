@@ -479,13 +479,14 @@ impl EditorView {
         let restore = self.pre_search_selection.take();
         self.state.update(cx, |state, cx| {
             state.clear_search(cx);
-            if state.selection().is_empty() {
-                if let Some(range) = restore {
-                    let len = state.len_chars();
-                    let start = range.start.min(len);
-                    let end = range.end.min(len).max(start);
-                    state.set_selection(start..end);
-                }
+            if let Some(range) = restore {
+                let len = state.len_chars();
+                let start = range.start.min(len);
+                let end = range.end.min(len).max(start);
+                state.set_selection(start..end);
+            } else {
+                let pos = state.selection().range.start;
+                state.set_selection(pos..pos);
             }
         });
         window.focus(&self.focus_handle, cx);
